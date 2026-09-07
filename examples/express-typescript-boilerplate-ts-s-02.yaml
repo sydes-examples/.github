@@ -1,0 +1,14 @@
+id: TS-S-02
+language: typescript
+source: manual
+repo: sydes-examples/express-typescript-boilerplate
+pr: 1
+complexity: simple
+propagation: D1
+breadth: B1
+observability: O1
+ground_truth_tests:
+  - "PetService :: Create should reject a non-positive age"
+route: POST /pets
+handler: PetController.create
+changed_symbol: PetService.create
