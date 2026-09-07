@@ -2,6 +2,7 @@ id: PY-S-02
 language: python
 source: manual
 repo: sydes-examples/Kokoro-FastAPI
+pr: 2
 complexity: simple
 propagation: D1
 breadth: B1-B2
