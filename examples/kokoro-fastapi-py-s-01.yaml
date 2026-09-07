@@ -1,0 +1,11 @@
+id: PY-S-01
+language: python
+source: manual
+repo: sydes-examples/Kokoro-FastAPI
+pr: 1
+complexity: simple
+propagation: D1
+breadth: B1-B2
+observability: O1
+ground_truth_tests:
+  - test_get_model_name_strips_whitespace

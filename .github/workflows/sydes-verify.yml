@@ -1,0 +1,167 @@
+name: Sydes verify (reusable)
+
+# Central, versionable implementation of the Sydes PR-verification integration.
+# Individual example repositories call this instead of each carrying their own
+# copy of the workflow steps and renderer script. See ../../CONTRACT.md in
+# this repository for the frozen v1 artifact/presentation contract this
+# workflow implements.
+#
+# Called from a repository's own `pull_request`-triggered workflow, e.g.:
+#
+#   jobs:
+#     sydes:
+#       uses: sydes-examples/.github/.github/workflows/sydes-verify.yml@main
+#       with:
+#         repo_alias: app
+#       secrets:
+#         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+#
+# The caller keeps its own `on: pull_request` trigger, permissions, and
+# concurrency group; this workflow inherits the same `github.event` context
+# because reusable-workflow jobs run within the caller's workflow run.
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: Model spec passed to `sydes verify-change --model`.
+        type: string
+        default: "openai:gpt-4.1-mini"
+      repo_alias:
+        description: Name Sydes uses for the checked-out repo (`--repo <alias>=.`).
+        type: string
+        default: "app"
+      sydes_ref:
+        description: Git ref of sydes-ai/sydes to install (branch, tag, or SHA).
+        type: string
+        default: "main"
+      renderer_ref:
+        description: Git ref of this repository to pull the renderer script from.
+        type: string
+        default: "main"
+    secrets:
+      OPENAI_API_KEY:
+        description: OpenAI key for `sydes verify-change`'s LLM calls.
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  verify-change:
+    name: Sydes verify-change
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # workflow_call jobs run inside the caller's workflow run, so this groups
+    # correctly per-PR even though the group name is defined here.
+    concurrency:
+      group: sydes-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+
+    steps:
+      # Full history: Sydes resolves the change with `git merge-base <base> HEAD`,
+      # so both the PR head and the PR base commit must be present locally.
+      - name: Check out PR head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      # A separate, pinned checkout of the renderer — it lives here, not in
+      # the repository under test.
+      - name: Check out Sydes integration scripts
+        uses: actions/checkout@v5
+        with:
+          repository: sydes-examples/.github
+          ref: ${{ inputs.renderer_ref }}
+          path: _sydes-integration
+          sparse-checkout: |
+            scripts
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Sydes
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "git+https://github.com/sydes-ai/sydes.git@${{ inputs.sydes_ref }}"
+
+      - name: Run Sydes verify-change
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # The impact guide requires the Codebase Memory backend; the default
+          # backend is `native`, which would silently skip semantic inference.
+          SYDES_CODE_INTELLIGENCE: cbm
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO_ALIAS: ${{ inputs.repo_alias }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          sydes verify-change \
+            --base "$BASE_SHA" \
+            --repo "${REPO_ALIAS}=." \
+            --llm-policy auto \
+            --impact-guide auto \
+            --code-review \
+            --model "$MODEL" \
+            --no-run-tests \
+            --verbose \
+            --json sydes-result.json
+
+      # Rendering runs even when the analysis step failed, so the PR still
+      # gets an explanation instead of silence.
+      - name: Render Sydes summary
+        if: always()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python _sydes-integration/scripts/render_sydes_pr.py sydes-result.json \
+            --out sydes-comment.md \
+            --diagnostics-out sydes-diagnostics.json \
+            --run-url "$RUN_URL"
+          cat sydes-comment.md >> "$GITHUB_STEP_SUMMARY"
+          echo "Wrote $(wc -c < sydes-comment.md) bytes to the job summary."
+
+      - name: Post or update Sydes PR comment
+        if: always()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- sydes-verification-comment -->';
+            const body = fs.readFileSync('sydes-comment.md', 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number, per_page: 100 },
+            );
+            const existing = comments.find(
+              (comment) => comment.body && comment.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment(
+                { owner, repo, comment_id: existing.id, body },
+              );
+              core.info(`Updated Sydes comment ${existing.id}`);
+            } else {
+              const created = await github.rest.issues.createComment(
+                { owner, repo, issue_number, body },
+              );
+              core.info(`Created Sydes comment ${created.data.id}`);
+            }
+
+      - name: Upload Sydes result
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: sydes-result
+          path: |
+            sydes-result.json
+            sydes-comment.md
+            sydes-diagnostics.json
+          if-no-files-found: warn
