@@ -1,0 +1,13 @@
+id: PY-S-02
+language: python
+source: manual
+repo: sydes-examples/Kokoro-FastAPI
+complexity: simple
+propagation: D1
+breadth: B1-B2
+observability: O1
+ground_truth_tests:
+  - test_combine_voices_rejects_excessive_weight
+route: POST /v1/audio/voices/combine
+handler: combine_voices
+changed_symbol: process_and_validate_voices

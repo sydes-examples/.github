@@ -9,3 +9,11 @@ breadth: B1-B2
 observability: O1
 ground_truth_tests:
   - test_get_model_name_strips_whitespace
+status: dead_code_negative
+note: >
+  Superseded as the Python simple-case support gate by PY-S-02. get_model_name's
+  only production call site was commented out by the upstream maintainer in
+  Jan 2025, before this case was created, so it has no live route/handler path
+  today. Sydes correctly reported affected_flows=0/obligations=0 for it — kept
+  as a negative case (informally PY-NEG-01) proving Sydes does not invent a
+  path for genuinely unreachable code, not as evidence of a support gap.

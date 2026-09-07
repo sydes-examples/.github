@@ -35,3 +35,14 @@ ground_truth_tests:                  # manually established, not Sydes-reported
 `ground_truth_tests` is the human-established expected answer for what
 verifies the change — used to evaluate whether Sydes independently
 identified it, never told to Sydes as input.
+
+Optional fields, added only when a case needs them:
+
+- `route`, `handler`, `changed_symbol` — the preregistered live production
+  call path (`route → handler → changed_symbol`), when the case is a
+  live/positive support-gate case.
+- `status` — set only when a case's role differs from the default (a live
+  positive case). `dead_code_negative` marks a case whose target symbol has
+  no live production caller, kept intentionally as a negative check that
+  Sydes does not invent a path for genuinely unreachable code. `note` gives
+  the one-paragraph reason alongside it.
