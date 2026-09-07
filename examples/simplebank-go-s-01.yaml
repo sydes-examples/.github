@@ -1,0 +1,11 @@
+id: GO-S-01
+language: go
+source: manual
+repo: sydes-examples/simplebank
+pr: 1
+complexity: simple
+propagation: D1
+breadth: B1
+observability: O1
+ground_truth_tests:
+  - TestTransferAPI/InsufficientBalance
