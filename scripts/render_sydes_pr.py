@@ -217,12 +217,41 @@ def _render_gaps(result: dict[str, Any], lines: list[str]) -> None:
 
 
 def _render_review(result: dict[str, Any], lines: list[str]) -> None:
+    """`code_findings` being empty means something different depending on
+    `code_review_status` — the pass never ran, it ran and failed, or it ran
+    and genuinely found nothing — and only the status field can tell those
+    apart. Rendering "no findings" for a review that never actually
+    completed would be absence of evidence read as evidence of absence.
+
+    `code_review_status` predates this field in older result JSON (`None`
+    here). Without it, a non-empty `code_findings` can only ever mean the
+    pass completed, so that case still renders correctly; an empty list from
+    that era genuinely cannot be told apart from "never ran" or "failed", so
+    the section is omitted rather than guessing.
+    """
+    status = _get(result, "code_review_status")
     findings = _as_list(_get(result, "code_findings", default=[]))
+    if status is None:
+        if not findings:
+            return
+        status = "completed"
+
+    if status == "not_requested":
+        return
 
     lines.append("### Review")
     lines.append("")
+
+    if status == "unavailable":
+        lines.append(
+            "Review unavailable — the code-review provider could not "
+            "complete the analysis. No review conclusion was produced."
+        )
+        lines.append("")
+        return
+
     if not findings:
-        lines.append("No code-review findings were reported.")
+        lines.append("Review completed — no findings.")
         lines.append("")
         return
 
