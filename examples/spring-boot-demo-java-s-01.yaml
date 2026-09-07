@@ -1,0 +1,15 @@
+id: JAVA-S-01
+language: java
+framework: spring
+source: manual
+repo: sydes-examples/spring-boot-demo
+pr: 1
+complexity: simple
+propagation: D1
+breadth: B1
+observability: O1
+ground_truth_tests:
+  - "UserServiceImplTest.saveRejectsBlankUsername"
+route: POST /user
+handler: UserController.save
+changed_symbol: UserServiceImpl.save
