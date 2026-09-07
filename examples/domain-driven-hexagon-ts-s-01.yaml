@@ -2,6 +2,7 @@ id: TS-S-01
 language: typescript
 source: manual
 repo: sydes-examples/domain-driven-hexagon
+pr: 1
 complexity: simple
 propagation: D1
 breadth: B1
