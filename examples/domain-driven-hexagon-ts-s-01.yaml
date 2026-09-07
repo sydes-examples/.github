@@ -1,0 +1,13 @@
+id: TS-S-01
+language: typescript
+source: manual
+repo: sydes-examples/domain-driven-hexagon
+complexity: simple
+propagation: D1
+breadth: B1
+observability: O1
+ground_truth_tests:
+  - "DeleteUserService rejects deleting an admin user without touching the repository"
+route: DELETE /v1/users/:id
+handler: DeleteUserHttpController.deleteUser
+changed_symbol: DeleteUserService.execute
