@@ -1,0 +1,126 @@
+case_id: RS-H-01
+language: rust
+framework: axum
+repo: sydes-examples/realworld-axum-sqlx
+upstream: launchbadge/realworld-axum-sqlx
+base_sha: f1b25654773228297e35c292f357d33b7121a101
+base_branch: main
+local_path: ~/sample_repos/realworld-axum-sqlx
+
+path: >
+  src/http/extractor.rs's AuthUser (a real Axum FromRequest extractor, added
+  as a handler parameter) -> AuthUser::from_authorization(ctx: &ApiContext,
+  auth_header: &HeaderValue) -- a plain, hand-written associated function
+  (NOT macro-generated) that parses the "Authorization: Token <jwt>" header,
+  verifies the JWT's HMAC-SHA-384 signature via ctx.config.hmac_key, and
+  checks the `exp` claim against the current time. This function is called
+  from EVERY authenticated route across 6 files: src/http/users.rs,
+  src/http/profiles.rs, src/http/articles/mod.rs,
+  src/http/articles/listing.rs, src/http/articles/comments.rs, and routed
+  via src/http/mod.rs.
+
+changed_symbols:
+  - AuthUser::from_authorization (src/http/extractor.rs)
+
+proposed_behavior: >
+  Change the token-expiration check -- e.g. add a short grace period after
+  `exp` during which a token is still accepted but flagged (a realistic
+  "avoid hard-cutoff re-auth" rule), or change how a malformed/missing
+  `Authorization` header is distinguished from an expired one in the
+  returned Error variant. This is fully deterministic pure-function logic
+  (JWT parse + HMAC verify + timestamp comparison) with NO database
+  dependency at all (from_authorization only touches ctx.config.hmac_key,
+  never ctx.db) -- fully unit-testable without a live Postgres, unlike
+  almost every other test in this repo.
+
+gt_direct_callers:
+  - impl FromRequest for AuthUser (async fn from_request, extractor.rs) --
+    the ONLY caller of from_authorization for the mandatory-auth case
+  - impl FromRequest for MaybeAuthUser (async fn from_request, extractor.rs)
+    -- calls the same function for the optional-auth case
+gt_indirect_callers:
+  - every handler function taking `AuthUser` or `MaybeAuthUser` as a
+    parameter across src/http/users.rs, profiles.rs, articles/mod.rs,
+    articles/listing.rs, articles/comments.rs (confirmed via grep -- 6
+    files depend on this extractor)
+gt_entrypoints:
+  - every authenticated route registered in src/http/mod.rs (e.g. current
+    user, update user, create/update/delete article, favorite/unfavorite,
+    follow/unfollow profile, add/delete comment, feed) -- deliberately NOT
+    a single route; this case tests whether Sydes can represent a
+    cross-cutting extractor's blast radius across many distinct handlers
+gt_components:
+  - src/http/extractor.rs (AuthUser, MaybeAuthUser, from_authorization)
+  - src/http/users.rs
+  - src/http/profiles.rs
+  - src/http/articles/mod.rs
+  - src/http/articles/listing.rs
+  - src/http/articles/comments.rs
+  - src/http/mod.rs (route registration, ApiContext)
+gt_tests:
+  - NONE EXIST TODAY anywhere in this repo (confirmed: `grep -rl
+    "#[tokio::test]\|#[sqlx::test]"` across the whole repo returns nothing
+    -- this RealWorld reference app is normally validated via an external
+    Postman/Newman collection against a running server, not Rust tests). A
+    new plain `#[test]` (NOT async, NOT requiring tokio or a live DB) can
+    be added directly in extractor.rs or a new tests module, since
+    from_authorization takes only `&ApiContext` and `&HeaderValue`, and an
+    ApiContext can be constructed with a lazily-connected PgPool
+    (sqlx::postgres::PgPoolOptions::connect_lazy, which never opens a
+    real connection unless a query is actually run) plus a real Config --
+    fully avoiding any live Postgres dependency for this specific test.
+tests_clearly_unrelated:
+  - none exist to be clearly unrelated -- the whole repo has zero tests
+
+archetype: cross-component (a cross-cutting authentication/session-validity
+  rule implemented as a real Axum extractor, affecting every authenticated
+  handler in the API as a shared dependency -- not framework-guard-macro
+  magic, since the actual logic lives in a plain, directly-callable
+  associated function)
+propagation: D3-D4 (extractor trait impl -> from_authorization -> consumed
+  by 5+ independent handler files; the FromRequest trait dispatch itself is
+  a real but thin Axum mechanism, distinct from Rocket's request-guard
+  macros -- the actual logic under test is a plain function, not compiler-
+  generated dispatch)
+breadth: B4 (7 components: extractor.rs + 5 handler files + mod.rs route
+  registration)
+observability: O5 (zero existing tests anywhere in this repo -- a real,
+  disclosed, repo-wide gap; the specific function targeted is, however,
+  genuinely and easily unit-testable in isolation, unlike almost
+  everything else here)
+complexity: hard
+
+known_caveats: >
+  THIS IS A NEW REPO added to the study specifically because no genuine
+  hard-complexity candidate exists in Rocket (the repo used for RS-S-01 and
+  RS-M-01): an exhaustive re-scan of every examples/* directory in Rocket
+  confirmed examples/todo (RS-M-01's location) is the ONLY location with a
+  >=2-hop plain function-call chain in the entire repo, and it only reaches
+  D2/B2 (2 files: main.rs, task.rs) -- there is no 3rd or 4th hand-written
+  component reachable from it (migrations are pure SQL applied once at
+  boot, unrelated to the request-time chain; the FileServer static-asset
+  route shares no code or state with the todo Task/Context chain). No
+  other local Rust repository existed in ~/sample_repos/ to source a
+  candidate from either. Per explicit instruction ("if not, choose another
+  Rust backend repo... do not artificially manufacture complexity"),
+  launchbadge/realworld-axum-sqlx was selected: an actively maintained
+  (1,105 stars, updated within days of this search, not archived),
+  real, well-known reference implementation of the RealWorld/Conduit spec,
+  explicitly designed by its maintainers (the SQLx team) "to experiment
+  with project architecture." It was forked to sydes-examples/realworld-
+  axum-sqlx and onboarded with the SAME sydes.yml workflow pattern used by
+  every other example repo in this study (base_sha above is the commit
+  immediately before that onboarding commit). Rust's overall PARTIAL
+  support status for this study is unaffected by this repo swap -- this
+  case tests the SAME underlying Sydes Rust-support gaps (deterministic
+  route detection, e.g. the express_mount_graph misapplication already
+  confirmed in RS-M-01) against a different, deeper codebase, not a
+  different tool.
+
+selection_reason: >
+  Chosen because from_authorization is the deepest, most genuinely
+  cross-cutting, fully-deterministic (no DB, no ML, no live infra)
+  hand-written function found in the new repo, giving the widest real
+  blast radius of any Rust candidate available anywhere in this study's
+  current scope, while still being trivially unit-testable in complete
+  isolation from the rest of the (untested) codebase.

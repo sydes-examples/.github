@@ -1,0 +1,112 @@
+case_id: GO-H-01
+language: go
+repo: sydes-examples/simplebank
+upstream: techschool/simplebank
+base_sha: 67ccf46a9bb3366ab95c1ebf07b8f02f93b3b563
+base_branch: master
+local_path: ~/sample_repos/simplebank
+
+path: >
+  asynq task-queue consumer (a non-HTTP entrypoint): worker/processor.go's
+  Start() registers mux.HandleFunc(TaskSendVerifyEmail,
+  processor.ProcessTaskSendVerifyEmail) on an asynq.ServeMux, run via
+  runTaskProcessor in main.go (a separate goroutine/process group from the
+  gRPC/REST servers) -> worker/task_send_verify_email.go's
+  ProcessTaskSendVerifyEmail(ctx, task) -> store.GetUser(ctx,
+  payload.Username) -> store.CreateVerifyEmail(ctx,
+  db.CreateVerifyEmailParams{...}) -> processor.mailer.SendEmail(subject,
+  content, to, nil, nil, nil) (mail/sender.go, a real SMTP client behind the
+  mail.EmailSender interface).
+
+changed_symbols:
+  - ProcessTaskSendVerifyEmail (worker/task_send_verify_email.go)
+
+proposed_behavior: >
+  Add a precondition inside ProcessTaskSendVerifyEmail: if
+  store.GetUser(...) returns a user whose IsEmailVerified is already true,
+  skip CreateVerifyEmail + SendEmail entirely and return nil (treat as a
+  successful no-op) instead of unconditionally sending another verification
+  email. This is a genuine, deterministic behavioral change reachable only
+  through the async task-consumer entrypoint, deliberately extending the
+  SAME async boundary GO-M-01 stopped at (GO-M-01 changed the PRODUCER side
+  -- CreateUserTx's AfterCreate -- and Sydes could only reach "inferred",
+  never "proven", for that boundary). This case sits entirely on the
+  CONSUMER side of that same boundary, testing whether Sydes can trace a
+  non-HTTP (asynq task-type) entrypoint at all.
+
+gt_direct_callers:
+  - worker/processor.go's mux.HandleFunc registration (the asynq dispatch
+    binding, not a plain Go function call -- this IS the entrypoint
+    resolution mechanism itself)
+gt_indirect_callers:
+  - worker/task_distributor.go's DistributeTaskSendVerifyEmail (the
+    producer side, GO-M-01's territory -- enqueues the task this consumer
+    processes; related but not itself changed here)
+gt_entrypoints:
+  - asynq task type "task:send_verify_email" (NOT an HTTP/gRPC route --
+    this case specifically probes whether Sydes has any notion of a
+    non-HTTP, task-queue-consumer entrypoint)
+gt_components:
+  - worker/processor.go (RedisTaskProcessor struct, mux registration)
+  - worker/task_send_verify_email.go (ProcessTaskSendVerifyEmail body)
+  - db/sqlc (GetUser, CreateVerifyEmail query contracts)
+  - mail/sender.go (EmailSender interface / SendEmail)
+gt_tests:
+  - NONE EXIST TODAY (confirmed: no worker/*_test.go file exists anywhere,
+    confirmed via grep for ProcessTaskSendVerifyEmail/TestProcessTask...).
+    A new test must be written from scratch: construct a
+    &RedisTaskProcessor{store: mockStore, mailer: mockMailer} (or an
+    exported constructor) using the EXISTING db/mock.MockStore (already has
+    GetUser and CreateVerifyEmail mocked, reused from GO-M-01's test), plus
+    a NEW small hand-written mock for the 1-method mail.EmailSender
+    interface (no existing mockmail package -- this is genuine new test
+    scaffolding, not a trivial extension).
+tests_clearly_unrelated:
+  - gapi/rpc_create_user_test.go (GO-M-01's producer-side test -- related in
+    spirit but does not exercise this consumer function at all)
+  - db/sqlc/store_test.go (TestTransferTx -- unrelated transaction family)
+
+archetype: dependency-interaction (a non-HTTP, message/task-queue consumer
+  entrypoint -- the deepest, most "external boundary" archetype available
+  in this repo)
+propagation: D3 (worker package -> db/sqlc query layer -> mail package,
+  intra-consumer; arguably D4 if the asynq dispatch mechanism itself is
+  counted as a distinct process boundary from where the change lives, since
+  this case sits entirely on the far side of the async edge GO-M-01
+  stopped at)
+breadth: B3 (4 components: worker/processor.go, task_send_verify_email.go,
+  db/sqlc GetUser/CreateVerifyEmail, mail/sender.go)
+observability: O5 (no existing test at all for this function or this
+  package's consumer side -- a real, disclosed gap; existing mock
+  scaffolding for db.Store makes a new test feasible, but the mailer mock
+  must be authored from scratch)
+complexity: hard
+
+known_caveats: >
+  This is a genuinely un-tested corner of the repo today (O5) -- unlike
+  GO-M-01, which had rich existing test scaffolding to extend. Also
+  unlike every other hard/medium case so far, the entrypoint itself is
+  NOT an HTTP/gRPC route -- it is an asynq task-type string dispatched via
+  a ServeMux. Whether Sydes' route/entrypoint model has ANY representation
+  for this kind of consumer at all is itself part of what this case is
+  designed to reveal -- if Sydes has no non-HTTP entrypoint concept, the
+  expected, honest outcome may be "no affected_flows constructed, known
+  entrypoint-model gap" rather than a false negative to be alarmed about.
+  Rejected alternate: VerifyEmailTx/VerifyEmail RPC (gapi/rpc_verify_email.go
+  -> db/sqlc/tx_verify_email.go) -- D2-D3/B2-B3, weaker depth and also has
+  zero existing tests; rejected in favor of the worker-consumer path's
+  greater depth and its direct thematic link to GO-M-01's already-observed
+  proof boundary. Rejected alternate: TransferTx (db/sqlc/tx_transfer.go) --
+  good breadth (5 sqlc calls) but only D2 (api layer -> db tx layer, no
+  process/consumer boundary), and only testable via live-DB integration
+  tests (db/sqlc/store_test.go), weaker than the worker path's pure-mock
+  testability.
+
+selection_reason: >
+  Chosen specifically because it extends the EXACT same async boundary
+  GO-M-01 already showed Sydes can only reach via LLM inference (never
+  proof) from the producer side -- this case tests the consumer side of
+  that same boundary, via a genuinely different KIND of entrypoint
+  (task-queue dispatch, not HTTP/gRPC), which is a meaningfully different
+  and harder structural question than "deeper call chain from an HTTP
+  route."

@@ -1,0 +1,105 @@
+case_id: PY-H-01
+language: python
+repo: sydes-examples/Kokoro-FastAPI
+upstream: remsky/Kokoro-FastAPI
+base_sha: 5152e8b6e29bd8f1ddd68c62a1a2471b5b34fd44
+base_branch: master
+local_path: ~/sample_repos/Kokoro-FastAPI
+
+path: >
+  POST /v1/audio/speech and POST /dev/captioned_speech (both routes) ->
+  services/text_processing/ssml.py's translate_ssml()/_render() (SSML
+  <prosody rate="..."> parsing) -> emits [rate:]/[baserate:]/[voice:] tags ->
+  services/text_processing/text_processor.py's split_by_voice() (tag
+  consumption, rate composition: current_rate = clamp_rate(base_rate *
+  tag_rate)) -> structures/schemas.py's clamp_rate/RATE_MIN/RATE_MAX (shared
+  bound) -> services/tts_service.py's generate_audio_stream/_split_multi_voice
+  (a SECOND clamp_rate(speed * segment_rate) pass per audio chunk).
+
+changed_symbols:
+  - split_by_voice (api/src/services/text_processing/text_processor.py) --
+    primary target: the rate-composition rule at the point where
+    current_rate is computed from base_rate * tag_rate, and/or the
+    voice-tag-resets-rate behavior (base_rate/tag_rate reset to 1.0 when a
+    [voice:] tag is seen).
+  - possibly _prosody_rate / PROSODY_RATE keyword table
+    (api/src/services/text_processing/ssml.py), if the change targets SSML
+    keyword/percentage parsing rather than tag composition.
+
+proposed_behavior: >
+  Change how [rate:]/[baserate:] tags compose across a [voice:] tag boundary
+  -- e.g., instead of unconditionally resetting base_rate/tag_rate to 1.0
+  whenever a [voice:] tag appears (current behavior, text_processor.py
+  ~line 141-142), change it so an explicit prior [baserate:] setting
+  persists across a voice change and only [rate:] (the prosody-scoped
+  multiplier) resets. This is a genuine, deterministic composition-rule
+  change with no ML/GPU dependency -- pure tag-algebra.
+
+gt_direct_callers:
+  - split_by_voice's callers within text_processor.py (the top-level
+    smart_split() pipeline)
+gt_indirect_callers:
+  - api/src/routers/openai_compatible.py::create_speech (POST /audio/speech)
+  - api/src/routers/development.py (POST /dev/captioned_speech)
+  - api/src/services/tts_service.py::generate_audio_stream (consumes the
+    composed rate downstream, applying a second clamp_rate(speed *
+    segment_rate) pass per chunk)
+gt_entrypoints:
+  - POST /v1/audio/speech
+  - POST /dev/captioned_speech
+gt_components:
+  - api/src/routers/ssml.py (translate_or_reject/apply_ssml, invoked from
+    both routes above)
+  - api/src/services/text_processing/ssml.py (_render, PROSODY_RATE,
+    _prosody_rate)
+  - api/src/structures/schemas.py (clamp_rate, RATE_MIN=0.25, RATE_MAX=4.0 --
+    a SHARED bound used by both the SSML emitter and the tag consumer)
+  - api/src/services/text_processing/text_processor.py (split_by_voice)
+  - api/src/services/tts_service.py (generate_audio_stream /
+    _split_multi_voice, second clamp pass)
+gt_tests:
+  - test_prosody_rate_gated_and_reverts (api/tests/test_ssml.py)
+  - test_prosody_spanning_a_voice_reasserts_the_rate (api/tests/test_ssml.py)
+  - test_prosody_rate_percent_and_number (api/tests/test_ssml.py)
+  - test_split_by_rate_segments (api/tests/test_text_processor.py)
+  - test_split_voice_tag_resets_rate (api/tests/test_text_processor.py)
+  - test_split_rate_scales_baserate (api/tests/test_text_processor.py)
+  - test_rate_tags_multiply_request_speed (api/tests/test_tts_service.py)
+tests_clearly_unrelated:
+  - api/tests/test_pause_bounds.py (PY-M-01's territory -- pause-tag budget,
+    a different tag family entirely)
+  - api/tests/test_openai_endpoints.py's voice-combination tests (weight
+    combination, unrelated to rate composition)
+
+archetype: cross-component (data-semantics: a tag-composition/precedence
+  rule spanning three independently-owned modules)
+propagation: D3-D4 (crosses ssml router -> ssml service -> shared schema
+  constant -> text_processor -> tts_service; two distinct HTTP routes both
+  depend on the composed result)
+breadth: B4 (5+ components: ssml.py router, ssml.py service, schemas.py,
+  text_processor.py, tts_service.py)
+observability: O3 (three genuinely independent, jointly-relevant test files
+  -- test_ssml.py, test_text_processor.py, test_tts_service.py -- none of
+  which alone would catch a regression introduced at a different layer;
+  test_ssml.py never checks the final per-chunk speed sent downstream,
+  test_tts_service.py never checks the SSML-emitted tag string)
+complexity: hard
+
+known_caveats: >
+  This is the SAME text_processor.py file PY-M-01 already touched (a
+  different function/behavior: check_pause_budget vs. split_by_voice) --
+  the two changes are on independent code paths (pause tags vs. rate/voice
+  tags) with no shared logic, so no overlap risk, but noted for
+  transparency. Rejected alternate: the voice-combination weighting chain
+  (openai_compatible.py -> tts_service.get_voices_path -> voice_manager.py
+  -> core/paths.py) is also a genuine D3/B4 candidate but has a weaker O
+  story (O4: existing tests are split across 3 files with mocking gaps at
+  the paths.py layer, rather than 3 files that are each independently and
+  jointly authoritative) -- kept as a documented backup, not selected.
+
+selection_reason: >
+  Chosen over the voice-combination-weighting alternate specifically for
+  its stronger O3 justification (three independently-owned, jointly
+  necessary test files) and because it exercises two distinct HTTP routes
+  through a shared multi-layer pipeline, giving the widest genuine blast
+  radius of any deterministic (non-ML) candidate found in this repo.

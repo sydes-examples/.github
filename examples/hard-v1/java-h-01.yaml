@@ -1,0 +1,109 @@
+case_id: JAVA-H-01
+language: java
+repo: sydes-examples/spring-boot-demo
+upstream: xkcoding/spring-boot-demo
+base_sha: dc5da86ac15d96fa5ae9bb05c02da95577ae54e3
+base_branch: master
+local_path: ~/sample_repos/spring-boot-demo
+module: demo-rbac-security
+
+path: >
+  Request-authentication flow (every authenticated request, not a single
+  named endpoint): JwtAuthenticationFilter.doFilterInternal
+  (config/JwtAuthenticationFilter.java) -> JwtUtil.getUsernameFromJWT ->
+  JwtUtil.parseJWT (util/JwtUtil.java -- validates JWT signature, then
+  cross-checks Redis via stringRedisTemplate.getExpire/.get(redisKey),
+  throwing TOKEN_EXPIRED/TOKEN_OUT_OF_CTRL on mismatch) ->
+  CustomUserDetailsService.loadUserByUsername (hand-joins UserDao + RoleDao
+  + PermissionDao, builds a UserPrincipal) -> SecurityContextHolder ->
+  RbacAuthorityService.hasPermission (SpEL-invoked by Spring Security's
+  method-security layer; hand-written dynamic-URL RBAC matching using
+  AntPathRequestMatcher over RoleDao/PermissionDao results) ->
+  AccessDeniedHandler (on rejection).
+
+changed_symbols:
+  - JwtUtil.parseJWT (util/JwtUtil.java) -- specifically the Redis-mismatch
+    equality check (StrUtil.equals(jwt, redisToken)) that currently
+    determines TOKEN_OUT_OF_CTRL vs. a valid token
+
+proposed_behavior: >
+  Change the Redis cross-check rule inside parseJWT -- e.g. instead of
+  requiring an EXACT string match between the presented JWT and the
+  Redis-stored token, allow the immediately-previous token to remain valid
+  for a short grace window after a token refresh (a realistic "avoid
+  thundering-herd re-auth on refresh" rule). This is a genuine, deterministic
+  change to authentication behavior that affects EVERY authenticated route
+  in the module, not just one controller.
+
+gt_direct_callers:
+  - JwtAuthenticationFilter.doFilterInternal (config/JwtAuthenticationFilter.java)
+gt_indirect_callers:
+  - every @RestController endpoint behind Spring Security's filter chain in
+    this module (MonitorController, and any other authenticated controller)
+    -- this is a cross-cutting concern, not a single traceable route
+gt_entrypoints:
+  - not a single HTTP route -- the filter sits in front of ALL authenticated
+    routes in demo-rbac-security; this case specifically probes whether
+    Sydes can represent "affects every authenticated endpoint" rather than
+    a single entrypoint
+gt_components:
+  - config/JwtAuthenticationFilter.java
+  - util/JwtUtil.java (parseJWT, getUsernameFromJWT)
+  - service/CustomUserDetailsService.java (loadUserByUsername)
+  - repository/UserDao.java, RoleDao.java, PermissionDao.java (hand-joined)
+  - config/RbacAuthorityService.java (hasPermission, SpEL-invoked)
+  - vo/UserPrincipal.java (authority-flattening)
+gt_tests:
+  - NONE EXIST TODAY for JwtUtil/CustomUserDetailsService/RbacAuthorityService
+    directly (confirmed via grep). demo-rbac-security/src/test/.../UserDaoTest.java
+    and DataInitTest.java exercise the DAOs but require a LIVE MySQL
+    (application.yml points at jdbc:mysql://127.0.0.1:3306/...);
+    RedisUtilTest.java requires live Redis but tests an unrelated util. A
+    new test must be written using the SAME pure-Mockito pattern already
+    proven in this module by JAVA-M-01's MonitorServiceTest (@RunWith
+    MockitoJUnitRunner, @Mock/@InjectMocks, no Spring context, no live
+    infra) -- mocking StringRedisTemplate + JwtConfig for JwtUtil, or the
+    three DAOs for RbacAuthorityService.
+tests_clearly_unrelated:
+  - MonitorServiceTest (JAVA-M-01's territory -- kickout/RedisUtil.delete,
+    unrelated to JWT/auth)
+  - RedisUtilTest, UserDaoTest (exercise different methods on the same
+    dependency classes, not this path)
+
+archetype: cross-component (error-behavior + dependency-interaction: a
+  security/session-validity rule crossing a cache (Redis) and a database
+  (3 DAOs), affecting every authenticated route as a cross-cutting concern)
+propagation: D4 (filter -> security-framework -> service -> repository x3
+  -> cache (Redis) -> SpEL-invoked authorization service -- a genuine
+  external-boundary crossing into Redis, plus a DB round-trip, plus a
+  framework-mediated SpEL invocation)
+breadth: B4 (6+ components: JwtAuthenticationFilter, JwtUtil,
+  CustomUserDetailsService, 3 DAOs, RbacAuthorityService, UserPrincipal)
+observability: O5 (no existing test at this layer at all -- a real,
+  disclosed gap; the in-module Mockito pattern from JAVA-M-01 makes a new
+  test feasible without live infra, but it does not exist yet)
+complexity: hard
+
+known_caveats: >
+  This case deliberately does NOT touch Spring Data JPA CRUD proxies (the
+  DAOs here are hand-joined queries in CustomUserDetailsService, not a
+  generic save()/findById() passthrough) -- consistent with the exclusion
+  already applied to JAVA-M-01. Rejected alternate: demo-mq-rabbitmq --
+  all 4 listener handlers are near-identical log-and-ack passthroughs with
+  no hand-written business logic and no mock-based test path (the only
+  test requires a live RabbitMQ broker); rejected as dominated by
+  passthrough logging + un-mockable infrastructure, the same failure mode
+  explicitly excluded for JAVA-M-01. Rejected alternate: demo-websocket's
+  ServerTask/Server.convertFileSize (a real, hand-written, infra-free
+  candidate via a @Scheduled job pushing over WebSocket) -- kept as a
+  solid backup if a Redis/DB-free hard case is later preferred, but the
+  JWT/RBAC chain was judged to have a more genuinely cross-cutting,
+  broader blast radius (affects ALL authenticated routes, not two entry
+  points into one computation).
+
+selection_reason: >
+  Chosen for being the deepest genuinely hand-written (non-JPA-proxy)
+  chain found across the whole ~55-module repo, and for testing a
+  qualitatively different shape of impact than every other case in this
+  study so far: a cross-cutting security concern with NO single named
+  entrypoint, rather than a specific controller method.

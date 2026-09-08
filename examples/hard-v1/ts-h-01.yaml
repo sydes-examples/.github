@@ -1,0 +1,121 @@
+case_id: TS-H-01
+language: typescript
+repo: sydes-examples/domain-driven-hexagon
+upstream: Sairyss/domain-driven-hexagon
+base_sha: 42b46d04687ae9bd640622099b719402f364dc77
+base_branch: master
+local_path: ~/sample_repos/domain-driven-hexagon
+
+path: >
+  POST /v1/users -> CreateUserHttpController.create
+  (create-user.http.controller.ts) -> this.commandBus.execute(new
+  CreateUserCommand(body)) -> @nestjs/cqrs CommandBus decorator dispatch ->
+  @CommandHandler(CreateUserCommand) CreateUserService.execute
+  (create-user.service.ts) -> new Address({...}) (value-object
+  construction+validation, address.value-object.ts) -> UserEntity.create()
+  (user.entity.ts, queues a UserCreatedDomainEvent via addEvent) ->
+  this.userRepo.transaction(async () => this.userRepo.insert(user)) (a REAL
+  slonik DB transaction, SqlRepositoryBase.transaction ->
+  SqlRepositoryBase.insert -> writeQuery) -> on successful insert,
+  entity.publishEvents() -> @nestjs/event-emitter's EventEmitter2.emitAsync
+  -> CROSSES INTO A DIFFERENT MODULE:
+  CreateWalletWhenUserIsCreatedDomainEventHandler.handle (@OnEvent
+  decorator, wallet module) -> WalletEntity.create() (queues its own
+  WalletCreatedDomainEvent) -> this.walletRepo.insert(wallet), reusing the
+  SAME open DB transaction via RequestContextService.
+
+changed_symbols:
+  - Address (address.value-object.ts) -- specifically its validate()
+    method's Guard.lengthIsBetween checks on country/street/postalCode
+
+proposed_behavior: >
+  Add a new validation rule inside Address.validate() -- e.g. reject a
+  specific postal-code format for a given country (a concrete, deterministic,
+  attributable rule). This requires Sydes to trace from a changed symbol
+  buried inside a value object, back UP through UserEntity.create ->
+  CreateUserService.execute -> CommandBus decorator dispatch ->
+  CreateUserHttpController.create -> POST /v1/users -- the REVERSE
+  direction of TS-M-01's controller-to-handler trace, and one layer deeper
+  (value object, not just the command handler itself).
+
+gt_direct_callers:
+  - UserEntity.create (user.entity.ts) -- the only caller of `new
+    Address(...)` on this path
+gt_indirect_callers:
+  - CreateUserService.execute (create-user.service.ts)
+  - CreateUserHttpController.create (create-user.http.controller.ts)
+  - (cascade, NOT reachable from an Address-only change since Address
+    validation runs before UserEntity.create succeeds, so a rejected
+    Address never reaches the wallet cascade) --
+    CreateWalletWhenUserIsCreatedDomainEventHandler.handle is documented
+    here for completeness of the FULL path's depth, but is only exercised
+    on the SUCCESS path, not by the specific validation-rejection change
+    proposed above
+gt_entrypoints:
+  - POST /v1/users
+gt_components:
+  - src/modules/user/commands/create-user/create-user.http.controller.ts
+  - src/modules/user/commands/create-user/create-user.command.ts
+  - src/modules/user/commands/create-user/create-user.service.ts
+  - src/modules/user/domain/value-objects/address.value-object.ts
+  - src/modules/user/domain/user.entity.ts
+  - src/libs/db/sql-repository.base.ts (transaction/insert/writeQuery)
+  - src/modules/user/domain/events/user-created.domain-event.ts
+  - (full-depth-only, not exercised by the Address-validation change itself)
+    src/modules/wallet/.../create-wallet-when-user-is-created.domain-event-handler.ts,
+    WalletEntity, WalletCreatedDomainEvent, WalletRepository
+  9 components on the direct validation-rejection path; 13 if the
+  success-path wallet cascade is counted.
+gt_tests:
+  - tests/user/create-user/create-user.e2e-spec.ts +
+    create-user.feature (jest-cucumber BDD, the only test type available)
+  - a NEW scenario must be added for the postal-code rejection rule --
+    none of the existing scenarios cover Address validation failures today
+tests_clearly_unrelated:
+  - tests/user/delete-user/delete-user.e2e-spec.ts (TS-M-01's territory)
+  - any wallet-module e2e spec (exercises the cascade's success path, not
+    the Address-rejection path)
+
+archetype: cross-component (data-semantics: a value-object validation rule
+  whose blast radius must be traced backward through an aggregate, a
+  decorator-dispatched command handler, and a transactional repository
+  base class shared across all aggregates in the codebase)
+propagation: D4 (HTTP -> CQRS command bus (decorator dispatch) ->
+  application service -> value-object construction -> aggregate/domain-event
+  queuing -> transactional SQL repository base class -- genuinely the
+  deepest chain found in this repo; the full success-path additionally
+  crosses an event-emitter fan-out into a SECOND module/aggregate/repository,
+  which is D4-plus but not exercised by the specific proposed change)
+breadth: B4 (9 components on the direct path; the codebase's true blast
+  radius, including the wallet cascade, is 13 files -- either way, solidly
+  >6)
+observability: O4 (existing tests are all happy-path e2e scenarios; zero
+  scenarios currently exercise ANY Address validation failure, so a new
+  scenario must be added, and -- per the same disclosed limitation as
+  TS-M-01 -- this repo has no unit-test option and needs live Postgres to
+  run any test at all)
+complexity: hard
+
+known_caveats: >
+  The domain-event cascade into the wallet module (via @nestjs/event-emitter's
+  @OnEvent, NOT @nestjs/cqrs's own @EventsHandler/EventBus -- confirmed via
+  grep, no @EventsHandler usage exists anywhere in src/) is real and
+  genuinely deeper than this case's proposed change actually exercises --
+  it is documented for completeness (it's the deepest thing in the
+  codebase) but a change scoped to Address.validate() rejecting input
+  never reaches it, since Address validation runs BEFORE UserEntity.create
+  succeeds. If a future case wants to specifically test cross-module
+  event-cascade tracing, a DIFFERENT change (e.g. inside UserEntity.create
+  itself, on the success path) would be needed -- noted as a distinct,
+  not-yet-used angle for a possible future case. Address.validate()'s rules
+  are explicitly commented in-source as "a very simplified example" -- the
+  validation logic itself is trivial (Guard-based length ranges), but it is
+  genuinely invoked at construction time, not a stub.
+
+selection_reason: >
+  Chosen because it was explicitly flagged during medium-case search as
+  "likely closer to hard than medium" and because it goes meaningfully
+  deeper than TS-M-01 in a DIFFERENT direction (down into a value object
+  and back up, crossing a transactional repository base class shared
+  across the whole codebase) rather than just a longer version of the same
+  controller-to-handler trace TS-M-01 already tested.
