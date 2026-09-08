@@ -1,0 +1,15 @@
+id: RS-S-01
+language: rust
+framework: rocket
+source: manual
+repo: sydes-examples/Rocket
+pr: 1
+complexity: simple
+propagation: D1
+breadth: B1
+observability: O1
+ground_truth_tests:
+  - "tests::new_rejects_zero_size"
+route: POST /
+handler: upload
+changed_symbol: PasteId::new
