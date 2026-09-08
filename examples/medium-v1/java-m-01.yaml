@@ -1,0 +1,90 @@
+case_id: JAVA-M-01
+language: java
+repo: sydes-examples/spring-boot-demo
+upstream: xkcoding/spring-boot-demo
+base_sha: dc5da86ac15d96fa5ae9bb05c02da95577ae54e3
+base_branch: master
+local_path: ~/sample_repos/spring-boot-demo
+module: demo-rbac-security
+
+proposed_path: >
+  DELETE /api/monitor/online/user/kickout
+  (MonitorController.kickoutOnlineUser) -> SecurityUtil.getCurrentUsername()
+  (static self-kick guard, already present) -> MonitorService.kickout(names)
+  -> RedisUtil.delete(redisKeys) (stringRedisTemplate.delete, hand-written,
+  no Spring Data JPA involvement on this branch at all).
+
+proposed_change: >
+  kickout(names) currently builds a Redis key for every entry in `names`
+  and deletes them all, with no filtering. Proposed change: reject or
+  silently dedupe blank/duplicate entries in `names` before building
+  redisKeys and calling RedisUtil.delete, inside MonitorService.kickout
+  itself (not pushed up into the controller), to keep the change on the
+  real service->util call path.
+
+ground_truth_symbols:
+  - MonitorService.kickout (service/MonitorService.java)
+  - MonitorController.kickoutOnlineUser (controller/MonitorController.java)
+    -- entrypoint only, not expected to need logic changes beyond what is
+    already there (blank-list guard already exists at line 53-55)
+
+ground_truth_entrypoints:
+  - DELETE /api/monitor/online/user/kickout (MonitorController)
+
+ground_truth_tests:
+  - NONE EXIST TODAY for this path (confirmed by direct inspection -- no
+    MonitorControllerTest or MonitorServiceTest file exists in
+    demo-rbac-security/src/test). Sibling tests RedisUtilTest
+    (findKeysForPage) and UserDaoTest (findByUsernameIn) exist in the same
+    module but cover the ONLINE-USER-LIST branch (onlineUser()), not the
+    kickout branch, and do not call RedisUtil.delete either. A new
+    MonitorServiceTest would need to be added.
+  - tests that should NOT be selected: RedisUtilTest/UserDaoTest above --
+    real files in the same module, but not on this method's call path;
+    including them as "supporting" GT would overstate coverage.
+
+archetype: data-semantics
+propagation: D2
+breadth: B2
+observability: O5
+complexity: medium
+
+why_medium: >
+  Genuine hand-written 2-hop chain (controller -> service -> RedisUtil)
+  with no Spring Data proxy involvement on the kickout branch specifically
+  (UserDao/JPA is only touched by the sibling onlineUser() branch, which
+  this case does not use) -- directly addresses the instruction to avoid
+  CRUD-proxy-noise-dominated Java candidates. D2/B2 keeps it inside the
+  medium band rather than pushing into hard.
+
+known_caveats: >
+  O5 (no adequate existing verification) is a real, disclosed gap: a new
+  MonitorServiceTest must be written from scratch. Confirmed feasible via
+  direct source read of SecurityUtil.getCurrentUsername() -- it is a
+  static method reading SecurityContextHolder.getContext().getAuthentication(),
+  which is NOT called on the path being changed in this proposal (kickout's
+  self-kick guard using SecurityUtil lives in the CONTROLLER, not the
+  SERVICE method being modified), so a pure-Mockito unit test on
+  MonitorService.kickout (mocking RedisUtil only) needs no PowerMock and no
+  live Spring context. Separately: a local Maven build attempt
+  (`mvn -pl demo-rbac-security -am test`) failed with Lombok
+  "cannot find symbol" errors for generated getters -- traced this to a
+  LOCAL environment mismatch (this machine's default JDK is 21; the repo
+  pins java.version=1.8 and its own .github/workflows/maven.yml correctly
+  sets java-version: 1.8 in CI) -- NOT a defect in this candidate. Real
+  validation will run through that same CI pipeline, as JAVA-S-01 already
+  did successfully in this repo. Local compilation could not be directly
+  confirmed in this session for that reason.
+
+selection_reason: >
+  Chosen over demo-upload's UploadController.yun -> QiNiuServiceImpl
+  (rejected: near-zero hand-written logic beyond a retry loop around a
+  third-party SDK client, and zero existing tests anywhere in the module)
+  and over demo-task-quartz's JobController (rejected: JobServiceImpl is
+  almost pure delegation to the Quartz Scheduler API with no hand-written
+  business logic, zero existing tests, and a live/DB-backed JobStore is
+  typically needed to exercise it meaningfully). MonitorService.kickout has
+  the most real, hand-written, testable logic of the candidates inspected,
+  and is structurally unrelated to JAVA-S-01's UserServiceImpl
+  (demo-orm-jdbctemplate module, controller/service-interface/service-impl
+  CRUD path).

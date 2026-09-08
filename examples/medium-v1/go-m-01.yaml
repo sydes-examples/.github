@@ -1,0 +1,79 @@
+case_id: GO-M-01
+language: go
+repo: sydes-examples/simplebank
+upstream: techschool/simplebank
+base_sha: 67ccf46a9bb3366ab95c1ebf07b8f02f93b3b563
+base_branch: master
+local_path: ~/sample_repos/simplebank
+
+proposed_path: >
+  gRPC CreateUser handler (gapi/rpc_create_user.go::(*Server).CreateUser) ->
+  store.CreateUserTx (db/sqlc/tx_create_user.go) -> execTx
+  (db/sqlc/exec_tx.go, begins a pgx transaction) -> q.CreateUser (SQL
+  insert) -> arg.AfterCreate(result.User) callback -> taskDistributor.
+  DistributeTaskSendVerifyEmail (worker/task_send_verify_email.go, enqueues
+  an asynq task consumed by a separate worker process).
+
+proposed_change: >
+  Today, CreateUserTx's execTx wraps the SQL insert and the AfterCreate
+  callback in one transaction: if DistributeTaskSendVerifyEmail fails for
+  any reason (e.g. the task queue is unavailable), the callback returns an
+  error, which rolls back the entire user-creation transaction -- the user
+  is not created at all. Proposed change: decouple task-enqueue failure
+  from user-creation success -- CreateUserTx should commit the user
+  creation even if AfterCreate fails, surfacing the enqueue failure
+  separately (e.g. as a logged warning / distinct response field) rather
+  than aborting the whole request.
+
+ground_truth_symbols:
+  - CreateUserTx (db/sqlc/tx_create_user.go)
+  - CreateUser (gapi/rpc_create_user.go) -- the AfterCreate closure
+    construction
+
+ground_truth_entrypoints:
+  - gRPC CreateUser (gapi/rpc_create_user.go)
+
+ground_truth_tests:
+  - TestCreateUserAPI (gapi/rpc_create_user_test.go) -- specifically its
+    existing "OK" and "InternalError" subtests, which already exercise
+    CreateUserTx via mockdb.MockStore and invoke AfterCreate through the
+    custom eqCreateUserTxParamsMatcher (lines 22-54). A new subtest (e.g.
+    "TaskDistributionFails") would extend this same file/matcher pattern
+    with a mockTaskDistributor returning an error.
+
+archetype: dependency-interaction
+propagation: D3
+breadth: B3
+observability: O1
+complexity: medium
+
+why_medium: >
+  Genuine 3-package chain (gapi -> db/sqlc -> worker) crossing a real
+  transaction boundary and an async task-queue dependency, not just a
+  deeper function-call chain within one file. Confirmed via a live test
+  run: `go test ./gapi/... -run TestCreateUserAPI -v` passes in 0.28s with
+  no live database, fully mock-based (mockdb.MockStore + mockwk task
+  distributor mock), so a new subtest can be added deterministically
+  without new infrastructure.
+
+known_caveats: >
+  DIFFERENT from GO-S-01 (which used the transfer/balance-check path in
+  api/transfer.go) -- no overlap. A second candidate (VerifyEmailTx) was
+  structurally similar but has zero existing tests to extend (confirmed via
+  find/grep -- no gapi/rpc_verify_email_test.go or db/sqlc/verify_email
+  test file exists), making CreateUserTx the stronger choice for ground-
+  truth anchoring. The proposed change intentionally reverses existing
+  transactional-consistency behavior (rollback-on-task-failure); at
+  implementation time, confirm this is still a defensible, intentional
+  design choice for the case rather than "fixing a bug" -- the point here
+  is a deterministic, testable behavioral change, not a claim that the
+  current behavior is wrong.
+
+selection_reason: >
+  Chosen over VerifyEmailTx (same tx-layer depth/breadth but no test
+  scaffold at all) and renewAccessToken (shallower -- only one real
+  cross-module hop to GetSession, the rest is in-handler branching, and no
+  existing tests reference it either). CreateUserTx has the strongest
+  combination of genuine multi-package depth and pre-existing, directly
+  relevant, fast mock-based test coverage of the three Go candidates
+  inspected.

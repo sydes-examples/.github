@@ -1,0 +1,73 @@
+case_id: PY-M-01
+language: python
+repo: sydes-examples/Kokoro-FastAPI
+upstream: remsky/Kokoro-FastAPI
+base_sha: 5152e8b6e29bd8f1ddd68c62a1a2471b5b34fd44
+base_branch: master
+local_path: ~/sample_repos/Kokoro-FastAPI
+
+proposed_path: >
+  POST /v1/audio/speech (api/src/routers/openai_compatible.py::create_speech)
+  and POST /dev/captioned_speech (api/src/routers/development.py) both call
+  into api/src/services/text_processing/text_processor.py's smart_split()
+  and check_pause_budget() for [pause:Ns] tag handling.
+
+proposed_change: >
+  Today, an individual [pause:Ns] tag whose raw requested duration exceeds
+  settings.max_pause_duration_s is silently clamped down in smart_split()
+  (text_processor.py, `min(float(duration_str), settings.max_pause_duration_s)`).
+  check_pause_budget() only enforces an aggregate/total pause budget across
+  all tags, not a per-tag ceiling. Proposed change: reject the request
+  (raise, surfaced as an HTTP 400 by the routers) if any single tag's raw
+  pre-clamp duration exceeds a multiple of max_pause_duration_s, instead of
+  silently truncating it. This is a genuine new error-behavior branch, not a
+  refactor of the existing aggregate-budget check.
+
+ground_truth_symbols:
+  - check_pause_budget (api/src/services/text_processing/text_processor.py)
+  - smart_split (api/src/services/text_processing/text_processor.py)
+
+ground_truth_entrypoints:
+  - POST /v1/audio/speech (openai_compatible.py::create_speech)
+  - POST /dev/captioned_speech (development.py)
+
+ground_truth_tests:
+  - test_pause_budget_rejects_many_tags
+  - test_pause_budget_exact_boundary_passes
+  - test_openai_speech_streaming_over_pause_budget_is_400
+  # A new test (e.g. test_single_pause_tag_exceeding_limit_is_rejected) would
+  # need to be added to api/tests/test_pause_bounds.py to cover the new
+  # per-tag rule specifically; the tests above cover the adjacent aggregate-
+  # budget behavior today and are the closest existing ground truth.
+
+archetype: error-behavior
+propagation: D2
+breadth: B3
+observability: O1
+complexity: medium
+
+why_medium: >
+  Real cross-module validation change spanning two HTTP routers plus the
+  shared text_processing module (and core/config.py if a new threshold
+  constant is added), with an existing, directly-relevant, fast (0.68s),
+  ML/GPU-free unit test suite (api/tests/test_pause_bounds.py, 7 tests,
+  confirmed passing via the repo's own .venv) to extend. Not a single-hop
+  local change, but not deep enough (no third layer, no external service)
+  to be hard.
+
+known_caveats: >
+  Local test run required using the repo's own .venv (system python3 lacked
+  pytest_asyncio) — confirmed working via `.venv/bin/python -m pytest`.
+  smart_split's clamp behavior and check_pause_budget's aggregate check are
+  closely related; care will be needed at implementation time to keep the
+  new per-tag rule additive rather than changing the meaning of the existing
+  aggregate-budget tests.
+
+selection_reason: >
+  Chosen over two other inspected candidates (voice-combination duplicate
+  detection: new logic would sit in one function despite a longer call
+  path, so the "new code crosses modules" signal is weaker; SSML
+  prosody/voice rate-inheritance: has an integration test that needs a
+  running TTS server, less deterministic) because it has the cleanest
+  multi-file production path, a purely deterministic/ML-free test story,
+  and a well-scoped, unambiguous behavioral rule.

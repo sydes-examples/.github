@@ -1,0 +1,96 @@
+case_id: RS-M-01
+language: rust
+framework: rocket
+repo: sydes-examples/Rocket
+upstream: rwf2/Rocket
+base_sha: 71f5eae101468c8f536981bfdd27725208f43b7a
+base_branch: master
+local_path: ~/sample_repos/Rocket
+example: examples/todo
+
+proposed_path: >
+  DELETE /todo/<id> (examples/todo/src/main.rs::delete) ->
+  Task::delete_with_id(id, &conn) (examples/todo/src/task.rs) -> on error ->
+  Context::err(&conn, msg) (main.rs) -> Task::all(conn) (task.rs). All plain
+  associated-function/struct-method calls -- no Rocket macro/trait-guard
+  dispatch involved beyond the #[delete("/<id>")] route attribute itself.
+
+proposed_change: >
+  Task::delete_with_id currently returns QueryResult<usize> (the count of
+  affected rows) but the delete handler only branches on Ok/Err, treating
+  "0 rows affected" (id did not exist) identically to "1 row affected"
+  (real deletion) -- both currently produce
+  Flash::success("Todo was deleted."), which is misleading for a
+  nonexistent id. Proposed change: have delete_with_id (or the delete
+  handler, inspecting the returned count) treat a 0-row result as an error,
+  routing it through the SAME Context::err -> Task::all error-rendering
+  path already used for genuine DB errors -- extending an existing error
+  branch to a new trigger condition rather than adding a wholly new branch.
+
+ground_truth_symbols:
+  - Task::delete_with_id (examples/todo/src/task.rs)
+  - delete handler (examples/todo/src/main.rs) -- if the row-count check is
+    placed in the handler rather than inside delete_with_id itself
+
+ground_truth_entrypoints:
+  - DELETE /todo/<id> (main.rs::delete)
+
+ground_truth_tests:
+  - tests::test_insertion_deletion (examples/todo/src/tests.rs) -- covers
+    the happy-path delete of an existing id; would need a new sibling test
+    (e.g. test_delete_nonexistent_id_is_error) asserting the error-template
+    path is taken instead of a silent 0-row "success".
+  - tests::test_toggle -- same Context::err/Task::all error-rendering
+    mechanism (shared with the toggle branch), useful as a secondary
+    reference for how the existing error path renders, though it is not
+    itself evidence for the delete-specific change.
+
+archetype: error-behavior
+propagation: D2
+breadth: B2
+observability: O1
+complexity: medium
+
+why_medium: >
+  This is the ONLY location in the entire Rocket repo (examples/ scanned
+  exhaustively) with a genuine, source-visible >=2-hop plain function-call
+  chain outside of paste_id.rs/RS-S-01 -- every other example (databases,
+  chat, state, cookies, serialization, forms, error-handling, responders,
+  hello, fairings, tls, templating, manual-routing) either calls straight
+  into a library primitive (db.run(closure), queue.send, State) with no
+  user-defined second hop, or routes the interesting logic through
+  FromRequest guard / Handler trait implicit dispatch, which was explicitly
+  excluded per instructions. D2/B2 (task.rs + main.rs) with a real,
+  deterministic, already-passing test suite keeps this squarely medium
+  rather than a forced/artificial case.
+
+known_caveats: >
+  Requires a local SQLite DB via Diesel with embedded migrations
+  (examples/todo/migrations/, run via diesel_migrations::embed_migrations!)
+  -- this is a LOCAL FILE, not a network service, but is a genuine
+  dependency the other Rust simple case (paste_id.rs, RS-S-01) did not
+  have. CONFIRMED WORKING: `cargo test` in examples/todo (full network
+  build, not --offline) compiled successfully (18.27s first build) and
+  ran all 5 existing tests to completion in 1.74s
+  (test_toggle, test_many_insertions, test_index, test_insertion_deletion,
+  test_bad_form_submissions -- all passed). Rust's known PARTIAL support
+  status (route-graph/repo_profile.json language-detection gap, unrelated
+  to call-edge tracing) is unchanged by this case and is not being
+  compensated for -- this candidate was not chosen because it looks easy
+  for Sydes; it was chosen because it is the only genuine multi-hop
+  candidate available in this repo, per instructions.
+
+selection_reason: >
+  Every DB-connected example (databases/*.rs) was rejected for being
+  single-hop (handler calls db.run(closure) directly, no named
+  intermediate function). Every non-DB example was rejected for being
+  either single-hop (chat, hello, fairings, serialization, responders,
+  templating) or dominated by FromRequest guard / Handler trait dispatch
+  (state/request_local.rs, cookies/session.rs, manual-routing's
+  CustomHandler). examples/todo's toggle/delete/index -> Context::err/raw
+  -> Task::all chain was the only remaining option satisfying the "plain
+  function calls, not macro/trait magic" constraint; within it, the
+  delete-with-zero-rows gap was chosen over the already-covered
+  insert-empty-description case (single-hop, already validated in the
+  handler) and over duplicating the toggle branch (structurally identical
+  to delete, would add no new signal).

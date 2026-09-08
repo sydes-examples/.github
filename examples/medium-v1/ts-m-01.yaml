@@ -1,0 +1,94 @@
+case_id: TS-M-01
+language: typescript
+repo: sydes-examples/domain-driven-hexagon
+upstream: Sairyss/domain-driven-hexagon
+base_sha: 42b46d04687ae9bd640622099b719402f364dc77
+base_branch: master
+local_path: ~/sample_repos/domain-driven-hexagon
+
+proposed_path: >
+  DELETE /v1/users/:id (DeleteUserHttpController.deleteUser,
+  src/modules/user/commands/delete-user/delete-user.http-controller.ts) ->
+  this.commandBus.execute(new DeleteUserCommand(...)) -> NestJS/@nestjs/cqrs
+  CommandBus.execute (real runtime dispatch: reads COMMAND_HANDLER_METADATA
+  off the command's constructor via reflect-metadata, looks up the bound
+  handler instance in a Map populated at module bootstrap -- confirmed by
+  reading node_modules/@nestjs/cqrs/dist/command-bus.js directly, not
+  assumed) -> @CommandHandler(DeleteUserCommand) DeleteUserService.execute
+  (same file, delete-user.service.ts) -> UserEntity.delete() (domain event)
+  + userRepo.findOneById/delete (inherited from SqlRepositoryBase, real
+  Slonik SQL against the users table).
+
+proposed_change: >
+  DeleteUserService.execute() currently only checks whether the user
+  exists (userRepo.findOneById) before deleting. Proposed change: add a
+  domain rule rejecting deletion of a protected/reserved user (e.g. an
+  admin role or a reserved system email) -- return a new ForbiddenException
+  (Err(...)) instead of proceeding to user.delete()/userRepo.delete() when
+  the rule is violated. This keeps the changed logic inside the deep
+  handler (preserving the decorator-dispatch propagation signal) rather
+  than pushing validation up into the controller.
+
+ground_truth_symbols:
+  - DeleteUserService.execute (delete-user.service.ts)
+
+ground_truth_entrypoints:
+  - DELETE /v1/users/:id (delete-user.http-controller.ts)
+
+ground_truth_tests:
+  - tests/user/delete-user/delete-user.e2e-spec.ts + delete-user.feature
+    ("I can delete a user" scenario) -- the only existing coverage, and it
+    is happy-path only (create then delete then assert absence); it does
+    NOT cover the NotFoundException branch or any new rejection branch.
+  - A new e2e scenario (no unit-test option exists in this repo -- see
+    caveats) would be needed to cover the proposed rejection rule, e.g.
+    "I cannot delete a protected user".
+  - tests that should NOT be selected as ground truth: any other module's
+    e2e specs (e.g. wallet, post) -- unrelated to this path.
+
+archetype: control-flow
+propagation: D3
+breadth: B3
+observability: O4
+complexity: medium
+
+why_medium: >
+  This is the case in the suite whose interesting structural feature is
+  the dispatch mechanism itself, not just chain length: a pure static
+  call-graph walk cannot find any call from deleteUser() to
+  DeleteUserService.execute() anywhere in source -- the only connection is
+  runtime decorator metadata (@CommandHandler(DeleteUserCommand) matched
+  against `new DeleteUserCommand(...)` at the call site) resolved through a
+  Map populated at NestJS bootstrap. Confirmed genuine (not dead code):
+  DeleteUserService is registered in user.module.ts's commandHandlers
+  array under a real CqrsModule import. 5-6 files meaningfully on the
+  path (controller, command/handler file, CommandBus mechanism, domain
+  entity, repository base, repository port/DI token).
+
+known_caveats: >
+  This repository has ZERO unit-level *.spec.ts files anywhere (confirmed
+  via `find . -iname "*.spec.ts"` -> empty) -- ALL testing is BDD/e2e via
+  jest-cucumber, and the e2e suite requires a live Postgres test database:
+  tests/setup/jestGlobalSetup.ts throws unless
+  databaseConfig.database contains "test", and docker/docker-compose.yml
+  exists specifically to provide that database. This is a real
+  infrastructure cost relative to the other four cases (GO-M-01 and
+  PY-M-01 need no live DB at all for their tests) -- flagged honestly per
+  instructions rather than minimized. The existing happy-path e2e test
+  also does not exercise the NotFoundException branch at all, so ground
+  truth for error branches is currently thin. A second, structurally
+  similar CreateUser candidate (POST /v1/users) was inspected as an
+  alternate -- deeper (adds value-object construction and a DB
+  transaction wrapper) but judged likely to land closer to "hard" than
+  "medium" and was not selected for that reason.
+
+selection_reason: >
+  This was the case explicitly flagged for re-inspection from scratch in
+  this task. Verified line-by-line that the command-bus indirection is
+  genuine (not mocked, not dead code) and structurally meaningful (decorator
+  metadata resolution, not a disguised direct call). A second alternate in
+  express-typescript-boilerplate (UserService.create -> EventDispatcher ->
+  UserEventSubscriber, a comparable decorator/event-based dynamic-dispatch
+  mechanism) has better existing unit-test coverage but a structurally
+  thinner payoff today (the subscriber is currently a no-op logger), so the
+  DDH command-bus path was preferred as the primary TS medium case.
