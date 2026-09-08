@@ -1,0 +1,71 @@
+{
+  "case_id": "RS-M-01",
+  "language": "rust",
+  "repo": "sydes-examples/Rocket",
+  "pr_url": "https://github.com/sydes-examples/Rocket/pull/2",
+  "base_sha": "71f5eae101468c8f536981bfdd27725208f43b7a",
+  "head_sha": "770a7d414d5ae063ae8c8a0104633e8f0d1df17a",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/Rocket/actions/runs/34269939170",
+  "run_id": "34269939170",
+  "timestamp": "2026-09-08T19:40:03Z",
+  "support_status": "PARTIAL",
+  "expected_path": "DELETE /todo/<id> -> delete handler (main.rs) -> [0 rows] -> Context::err -> Task::all",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 2,
+    "changed_source_files": ["examples/todo/src/main.rs"],
+    "changed_test_files": ["examples/todo/src/tests.rs"],
+    "changed_symbols_count": 2,
+    "known_entrypoints": 913,
+    "http_entrypoints": 0,
+    "route_derived_entrypoints_added": 2,
+    "cbm_index_mode_retried": "fast->full (2 changed file(s) under an excluded directory)",
+    "accepted_impacts_count": 4,
+    "impacts_proven": 4,
+    "impacts_inferred": 0,
+    "accepted_impacts_detail": [
+      {"label": "DELETE /", "status": "proven", "changed_symbols": ["delete"]},
+      {"label": "DELETE /{id}", "status": "proven", "changed_symbols": ["delete"]},
+      {"label": "DELETE /file", "status": "proven", "changed_symbols": ["delete"]},
+      {"label": "rocket", "status": "proven", "changed_symbols": ["delete"]}
+    ],
+    "unresolved_changed_symbols": 0,
+    "affected_flows_count": 3,
+    "affected_flows_labels": ["DELETE /", "DELETE /{id}", "DELETE /file"],
+    "affected_flow_changed_nodes": [
+      "examples/todo/src/main.rs:delete",
+      "examples/todo/src/tests.rs:test_delete_nonexistent_id_is_error"
+    ],
+    "obligations_count": 3,
+    "obligations_passed": 0,
+    "obligations_failed": 0,
+    "obligations_unverified": 3,
+    "obligations_unknown": 0,
+    "test_files_found": 182,
+    "test_cases_found": 375,
+    "test_frameworks_detected": "none",
+    "test_executions_count": 0,
+    "mapped_tests_count": 0,
+    "supporting_tests_count": 3,
+    "verification_gaps": [],
+    "code_findings_count": 0,
+    "diagnostic_notes": [
+      "CONFIRMED FALSE POSITIVE, root-caused by direct source inspection: 'DELETE /' and 'DELETE /file' belong to entirely unrelated example crates in this Cargo workspace (DELETE / matches handler functions literally named `delete` in examples/cookies/src/message.rs and three examples/databases/src/*.rs files; DELETE /file matches examples/responders/src/main.rs's #[delete(\"/file\")] handler). Only 'DELETE /{id}' (examples/todo/src/main.rs) is the real, correct route for this change. Root cause: the deterministic route-composition heuristic (deterministic_frameworks=express_mount_graph, per diagnostics -- the same generic heuristic misapplied to Rust noted for RS-S-01) appears to attribute routes to the changed symbol by bare function NAME ('delete') across the whole workspace rather than scoping by crate/file, so any other example's same-named handler gets incorrectly pulled in as an affected route.",
+      "This is the SAME known, already-documented Rust route-detection limitation as RS-S-01 (deterministic_frameworks=express_mount_graph misapplied to a Rust/Rocket codebase), but manifesting in the OPPOSITE direction: RS-S-01 showed under-detection (affected_flows=0, no route recognized at all); RS-M-01 shows over-detection (false-positive extra routes). Recorded as a further, concrete symptom of the same accepted limitation, not a new architectural gap -- NOT fixed here, per instructions.",
+      "test_frameworks_detected='none' despite this being a cargo-test-based repo -- consistent with the general Rust language-support gap, though the actual GT test (test_delete_nonexistent_id_is_error) was still correctly attached to all three flows' changed_nodes."
+    ]
+  },
+  "ground_truth_test": {
+    "name": "tests::test_delete_nonexistent_id_is_error",
+    "discovered": true,
+    "mapped_or_selected": true,
+    "supporting_names_seen": []
+  },
+  "caveats": [
+    "The correct route (DELETE /{id}) WAS recovered and proven -- so expected-path recovery is a genuine positive -- but the result is contaminated by two confirmed false-positive routes attributable to a known Rust-specific limitation, consistent with Rust's overall PARTIAL status for this study."
+  ]
+}

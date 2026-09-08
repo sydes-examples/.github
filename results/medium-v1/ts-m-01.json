@@ -1,0 +1,76 @@
+{
+  "case_id": "TS-M-01",
+  "language": "typescript",
+  "repo": "sydes-examples/domain-driven-hexagon",
+  "pr_url": "https://github.com/sydes-examples/domain-driven-hexagon/pull/2",
+  "base_sha": "42b46d04687ae9bd640622099b719402f364dc77",
+  "head_sha": "98dd0d377a44c48f5c25015c1fa385837d3fffa1",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/domain-driven-hexagon/actions/runs/34269931620",
+  "run_id": "34269931620",
+  "timestamp": "2026-09-08T19:37:50Z",
+  "support_status": "PARTIAL",
+  "expected_path": "DELETE /v1/users/:id -> DeleteUserHttpController.deleteUser -> CommandBus.execute(DeleteUserCommand) -> @CommandHandler DeleteUserService.execute",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "HIGH",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 6,
+    "changed_source_files": [
+      "src/libs/exceptions/exception.codes.ts",
+      "src/libs/exceptions/exceptions.ts",
+      "src/modules/user/commands/delete-user/delete-user.http-controller.ts",
+      "src/modules/user/commands/delete-user/delete-user.service.ts"
+    ],
+    "changed_test_files": ["tests/user/delete-user/delete-user.e2e-spec.ts", "tests/user/delete-user/delete-user.feature"],
+    "changed_symbols_count": 3,
+    "known_entrypoints": 8,
+    "http_entrypoints": 0,
+    "route_derived_entrypoints_added": 0,
+    "cbm_index_mode_retried": false,
+    "accepted_impacts_count": 2,
+    "impacts_proven": 1,
+    "impacts_inferred": 1,
+    "accepted_impacts_detail": [
+      {"label": "DELETE /", "status": "proven", "changed_symbols": ["constructor", "deleteUser"]},
+      {"label": "User deletion via HTTP API", "status": "inferred", "changed_symbols": ["execute"], "llm_confidence": 0.85, "llm_inference_type": "semantic_direct_dependency"}
+    ],
+    "unresolved_changed_symbols": 1,
+    "affected_flows_count": 1,
+    "affected_flows_labels": ["DELETE /"],
+    "affected_flow_changed_nodes": [
+      "src/libs/exceptions/exceptions.ts:ForbiddenException.constructor",
+      "src/modules/user/commands/delete-user/delete-user.http-controller.ts:DeleteUserHttpController.deleteUser",
+      "src/modules/user/commands/delete-user/delete-user.service.ts:DeleteUserService.execute"
+    ],
+    "obligations_count": 3,
+    "obligations_passed": 0,
+    "obligations_failed": 0,
+    "obligations_unverified": 3,
+    "obligations_unknown": 0,
+    "test_files_found": 10,
+    "test_cases_found": 12,
+    "test_frameworks_detected": "jest",
+    "test_executions_count": 0,
+    "mapped_tests_count": 0,
+    "supporting_tests_count": 12,
+    "verification_gaps": [],
+    "code_findings_count": 0,
+    "diagnostic_notes": [
+      "NOTABLE POSITIVE FINDING: the proven flow's changed_nodes list includes DeleteUserService.execute -- meaning Sydes' analysis DID connect DeleteUserHttpController.deleteUser through the @nestjs/cqrs CommandBus decorator-resolved dispatch to the handler, the core structural challenge this case was chosen to test. This is a real, positive validation of Sydes' ability to bridge this specific NestJS/CQRS pattern, not merely a route-level match.",
+      "A second, separate 'inferred' impact entry ('User deletion via HTTP API') appears to restate the same underlying fact via LLM reasoning rather than adding new information -- read as descriptive/redundant, not as a sign the main proven flow is incomplete.",
+      "risk=HIGH here (vs MEDIUM elsewhere) reflects 0 obligations passed / 3 unverified with zero test executions -- consistent with the disclosed verification gap below, not a sign of a worse structural result than the other four cases."
+    ]
+  },
+  "ground_truth_test": {
+    "name": "delete-user.feature: \"I cannot delete a protected user\" (new scenario)",
+    "discovered": true,
+    "mapped_or_selected": "written as source, NOT yet observed passing anywhere (local Docker/Postgres pull stalled in the sandbox, and this Sydes CI check does not execute test suites itself -- test_executions_count=0 across ALL FIVE medium cases, not specific to TS)",
+    "supporting_names_seen": []
+  },
+  "caveats": [
+    "Real, disclosed verification gap: the new e2e scenario has never been observed passing (not locally, not yet in any CI run of the repo's own test workflow). The structural/CQRS-tracing result above is independently positive and should not be read as validating full behavioral correctness.",
+    "Protected-user rule implemented as: any user with role UserRoles.admin cannot be deleted (existing enum, no new entity fields added)."
+  ]
+}

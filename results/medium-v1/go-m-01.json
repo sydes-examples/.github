@@ -1,0 +1,70 @@
+{
+  "case_id": "GO-M-01",
+  "language": "go",
+  "repo": "sydes-examples/simplebank",
+  "pr_url": "https://github.com/sydes-examples/simplebank/pull/2",
+  "base_sha": "67ccf46a9bb3366ab95c1ebf07b8f02f93b3b563",
+  "head_sha": "4fbf631012a6252468264b2ca6a4fcf13e0ed130",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/simplebank/actions/runs/34269925832",
+  "run_id": "34269925832",
+  "timestamp": "2026-09-08T19:36:44Z",
+  "support_status": "PARTIAL",
+  "expected_path": "gRPC CreateUser -> store.CreateUserTx -> execTx -> AfterCreate -> taskDistributor.DistributeTaskSendVerifyEmail",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 3,
+    "changed_source_files": ["db/sqlc/tx_create_user.go", "gapi/rpc_create_user.go"],
+    "changed_test_files": ["gapi/rpc_create_user_test.go"],
+    "changed_symbols_count": 3,
+    "known_entrypoints": 7,
+    "http_entrypoints": 1,
+    "route_derived_entrypoints_added": 7,
+    "cbm_index_mode_retried": false,
+    "accepted_impacts_count": 3,
+    "impacts_proven": 0,
+    "impacts_inferred": 3,
+    "accepted_impacts_detail": [
+      {"label": "POST /users", "status": "inferred", "changed_symbols": ["(whole change)", "CreateUser", "CreateUserTx", "TestCreateUserAPI"], "llm_confidence": 0.85, "llm_inference_type": "semantic_pr_wide_theme"},
+      {"label": "POST /users user creation API endpoint", "status": "inferred", "changed_symbols": ["TestCreateUserAPI"], "llm_confidence": 0.85, "llm_inference_type": "semantic_pr_wide_theme"},
+      {"label": "POST /users user creation process", "status": "inferred", "changed_symbols": ["CreateUserTx", "TestCreateUserAPI"], "llm_confidence": 0.9, "llm_inference_type": "semantic_indirect_dependency"}
+    ],
+    "unresolved_changed_symbols": 3,
+    "affected_flows_count": 1,
+    "affected_flows_labels": ["POST /users"],
+    "affected_flow_changed_nodes": [
+      "db/sqlc/tx_create_user.go:SQLStore.CreateUserTx",
+      "gapi/rpc_create_user.go:Server.CreateUser",
+      "gapi/rpc_create_user_test.go:TestCreateUserAPI"
+    ],
+    "obligations_count": 1,
+    "obligations_passed": 0,
+    "obligations_failed": 0,
+    "obligations_unverified": 1,
+    "obligations_unknown": 0,
+    "test_files_found": 18,
+    "test_cases_found": 40,
+    "test_frameworks_detected": "go_test",
+    "test_executions_count": 0,
+    "mapped_tests_count": 0,
+    "supporting_tests_count": 2,
+    "verification_gaps": [],
+    "code_findings_count": 0,
+    "diagnostic_notes": [
+      "The flow's own changed_nodes graph correctly includes CreateUserTx, CreateUser, and TestCreateUserAPI (i.e. the actual call-chain nodes were structurally located) -- but the impact/obligation classification layer only reached 'inferred' (LLM-based), never 'proven'. This is an honest, expected result: whether AfterCreate's decoupled-failure behavior actually changes POST /users' observable behavior is a semantic/transactional-commit property, not a fact a pure static call-graph can prove -- and it was correctly NOT promoted to 'proven' from LLM inference.",
+      "known .github/workflows/sydes.yml pin-commit noise appears in the raw diff, same as other cases."
+    ]
+  },
+  "ground_truth_test": {
+    "name": "TestCreateUserAPI/TaskDistributionFails",
+    "discovered": true,
+    "mapped_or_selected": true,
+    "supporting_names_seen": []
+  },
+  "caveats": [
+    "This is a case where the expected call-chain nodes ARE structurally located, but the overall impact could only be accepted as LLM-inferred, not proven -- worth reading alongside PY-M-01/JAVA-M-01/RS-M-01 where the same route WAS proven, to see the boundary between what this version of Sydes can structurally prove vs. what it must fall back to inference for."
+  ]
+}

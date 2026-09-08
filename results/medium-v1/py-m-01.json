@@ -1,0 +1,68 @@
+{
+  "case_id": "PY-M-01",
+  "language": "python",
+  "repo": "sydes-examples/Kokoro-FastAPI",
+  "pr_url": "https://github.com/sydes-examples/Kokoro-FastAPI/pull/3",
+  "base_sha": "5152e8b6e29bd8f1ddd68c62a1a2471b5b34fd44",
+  "head_sha": "8d660b52e14a4c7144abe0dd42806a5ad7121caa",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/Kokoro-FastAPI/actions/runs/34269918464",
+  "run_id": "34269918464",
+  "timestamp": "2026-09-08T19:37:23Z",
+  "support_status": "PASS",
+  "expected_path": "POST /v1/audio/speech, POST /dev/captioned_speech -> check_pause_budget (text_processor.py)",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 4,
+    "changed_source_files": ["api/src/services/text_processing/text_processor.py"],
+    "changed_test_files": ["api/tests/test_openai_endpoints.py", "api/tests/test_pause_bounds.py"],
+    "changed_symbols_count": 4,
+    "known_entrypoints": 173,
+    "http_entrypoints": 2,
+    "route_derived_entrypoints_added": 0,
+    "cbm_index_mode_retried": false,
+    "accepted_impacts_count": 2,
+    "impacts_proven": 2,
+    "impacts_inferred": 0,
+    "accepted_impacts_detail": [
+      {"label": "POST /audio/speech", "status": "proven", "changed_symbols": ["check_pause_budget"]},
+      {"label": "POST /dev/captioned_speech", "status": "proven", "changed_symbols": ["check_pause_budget"]}
+    ],
+    "unresolved_changed_symbols": 3,
+    "unresolved_changed_symbols_detail": "the 3 new test functions themselves -- correctly NOT resolved as entrypoint-reachable production symbols, since they are test declarations, not part of the production call graph",
+    "affected_flows_count": 2,
+    "affected_flows_labels": ["POST /audio/speech", "POST /dev/captioned_speech"],
+    "obligations_count": 11,
+    "obligations_passed": 0,
+    "obligations_failed": 0,
+    "obligations_unverified": 2,
+    "obligations_unknown": 9,
+    "test_files_found": 37,
+    "test_cases_found": 296,
+    "test_frameworks_detected": "pytest",
+    "test_executions_count": 0,
+    "mapped_tests_count": 29,
+    "supporting_tests_count": 100,
+    "verification_gaps": [],
+    "code_findings_count": 0,
+    "diagnostic_notes": [
+      "route composition unresolved for some containers (5 of 6 route containers have no resolvable mount/declared prefix) -- pre-existing repo-wide diagnostic, not specific to this change",
+      "known .github/workflows/sydes.yml pin-commit noise appears in the raw diff (1 added line) -- an artifact of the temporary sydes_ref pin mechanism, not part of the real preregistered change"
+    ]
+  },
+  "ground_truth_test": {
+    "name": "test_single_pause_tag_exceeding_limit_is_rejected",
+    "discovered": true,
+    "mapped_or_selected": true,
+    "supporting_names_seen": [
+      "test_single_pause_tag_at_limit_passes",
+      "test_openai_speech_single_oversized_pause_tag_is_400"
+    ]
+  },
+  "caveats": [
+    "Chosen multiple for the per-tag ceiling (2x max_pause_duration_s) was an implementation judgment call, documented in the PR, not literally specified by the preregistration's 'a multiple' wording."
+  ]
+}

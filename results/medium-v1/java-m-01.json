@@ -1,0 +1,69 @@
+{
+  "case_id": "JAVA-M-01",
+  "language": "java",
+  "repo": "sydes-examples/spring-boot-demo",
+  "pr_url": "https://github.com/sydes-examples/spring-boot-demo/pull/2",
+  "base_sha": "dc5da86ac15d96fa5ae9bb05c02da95577ae54e3",
+  "head_sha": "61544331e943d39db2bfe9c9a3eab4879815d6cc",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/spring-boot-demo/actions/runs/34269933622",
+  "run_id": "34269933622",
+  "timestamp": "2026-09-08T19:38:46Z",
+  "support_status": "PASS",
+  "expected_path": "DELETE /api/monitor/online/user/kickout -> MonitorController.kickoutOnlineUser -> MonitorService.kickout -> RedisUtil.delete",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 2,
+    "changed_source_files": ["demo-rbac-security/src/main/java/com/xkcoding/rbac/security/service/MonitorService.java"],
+    "changed_test_files": ["demo-rbac-security/src/test/java/com/xkcoding/rbac/security/service/MonitorServiceTest.java"],
+    "changed_symbols_count": 4,
+    "known_entrypoints": 521,
+    "http_entrypoints": 1,
+    "route_derived_entrypoints_added": 0,
+    "cbm_index_mode_retried": false,
+    "accepted_impacts_count": 1,
+    "impacts_proven": 1,
+    "impacts_inferred": 0,
+    "accepted_impacts_detail": [
+      {"label": "DELETE /api/monitor/online/user/kickout", "status": "proven", "changed_symbols": ["kickout"]}
+    ],
+    "unresolved_changed_symbols": 0,
+    "affected_flows_count": 1,
+    "affected_flows_labels": ["DELETE /api/monitor/online/user/kickout"],
+    "affected_flow_changed_nodes": [
+      "demo-rbac-security/src/main/java/com/xkcoding/rbac/security/service/MonitorService.java:MonitorService.kickout",
+      "demo-rbac-security/src/test/java/com/xkcoding/rbac/security/service/MonitorServiceTest.java:MonitorServiceTest.setUp",
+      "demo-rbac-security/src/test/java/com/xkcoding/rbac/security/service/MonitorServiceTest.java:MonitorServiceTest.tearDown",
+      "demo-rbac-security/src/test/java/com/xkcoding/rbac/security/service/MonitorServiceTest.java:MonitorServiceTest.kickoutFiltersBlankAndDuplicateNames"
+    ],
+    "obligations_count": 2,
+    "obligations_passed": 0,
+    "obligations_failed": 0,
+    "obligations_unverified": 2,
+    "obligations_unknown": 0,
+    "test_files_found": 93,
+    "test_cases_found": 152,
+    "test_frameworks_detected": "none",
+    "test_executions_count": 0,
+    "mapped_tests_count": 0,
+    "supporting_tests_count": 2,
+    "verification_gaps": [],
+    "code_findings_count": 0,
+    "diagnostic_notes": [
+      "The brand-new MonitorServiceTest (including its actual test method kickoutFiltersBlankAndDuplicateNames, not just the file) was correctly discovered and mapped directly onto the proven flow -- a clean, unambiguous result despite this case's preregistered O5 rating (no existing test on this path before this PR).",
+      "test_frameworks_detected='none' is a diagnostic oddity given this IS a JUnit4/Mockito test -- but it does not appear to affect the actual per-symbol mapping shown above, which is independently correct. Reported honestly rather than reconciled/explained away."
+    ]
+  },
+  "ground_truth_test": {
+    "name": "MonitorServiceTest.kickoutFiltersBlankAndDuplicateNames",
+    "discovered": true,
+    "mapped_or_selected": true,
+    "supporting_names_seen": []
+  },
+  "caveats": [
+    "Verified via a genuinely obtained JDK 8 (Temurin 8u504-b01 + Rosetta 2, installed this session) -- BUILD SUCCESS, Tests run: 1, Failures: 0, Errors: 0."
+  ]
+}
