@@ -1,0 +1,112 @@
+{
+  "manifest_purpose": "Frozen record of all five medium-case patches, written BEFORE any Sydes canonical run against them, per the study's selection-before-observation rule.",
+  "preregistration_commit": "79a0c5f",
+  "preregistration_repo": "sydes-examples/.github",
+  "created_at": "2026-09-08T00:00:00Z",
+  "cases": [
+    {
+      "case_id": "PY-M-01",
+      "language": "python",
+      "repo": "sydes-examples/Kokoro-FastAPI",
+      "pr_url": "https://github.com/sydes-examples/Kokoro-FastAPI/pull/3",
+      "base_branch": "master",
+      "base_sha": "5152e8b6e29bd8f1ddd68c62a1a2471b5b34fd44",
+      "head_sha": "8d660b52e14a4c7144abe0dd42806a5ad7121caa",
+      "changed_files": [
+        "api/src/services/text_processing/text_processor.py",
+        "api/tests/test_openai_endpoints.py",
+        "api/tests/test_pause_bounds.py"
+      ],
+      "expected_path": "POST /v1/audio/speech (openai_compatible.py::create_speech) and POST /dev/captioned_speech (development.py) -> check_pause_budget() / smart_split() (text_processor.py)",
+      "ground_truth_tests": [
+        "test_single_pause_tag_exceeding_limit_is_rejected",
+        "test_single_pause_tag_at_limit_passes",
+        "test_openai_speech_single_oversized_pause_tag_is_400"
+      ],
+      "preregistration_file": "examples/medium-v1/py-m-01.yaml",
+      "local_test_result": "321 passed (full api/tests/ excluding integration/), no regressions"
+    },
+    {
+      "case_id": "GO-M-01",
+      "language": "go",
+      "repo": "sydes-examples/simplebank",
+      "pr_url": "https://github.com/sydes-examples/simplebank/pull/2",
+      "base_branch": "master",
+      "base_sha": "67ccf46a9bb3366ab95c1ebf07b8f02f93b3b563",
+      "head_sha": "4fbf631012a6252468264b2ca6a4fcf13e0ed130",
+      "changed_files": [
+        "db/sqlc/tx_create_user.go",
+        "gapi/rpc_create_user.go",
+        "gapi/rpc_create_user_test.go"
+      ],
+      "expected_path": "gRPC CreateUser (rpc_create_user.go) -> store.CreateUserTx (tx_create_user.go) -> execTx -> q.CreateUser -> AfterCreate closure -> taskDistributor.DistributeTaskSendVerifyEmail (worker/task_send_verify_email.go)",
+      "ground_truth_tests": [
+        "TestCreateUserAPI/TaskDistributionFails"
+      ],
+      "preregistration_file": "examples/medium-v1/go-m-01.yaml",
+      "local_test_result": "go test ./gapi/... -run TestCreateUserAPI -v: all 5 subtests PASS; db/sqlc tests require live Postgres, not run (pre-existing environmental limitation, not a regression)"
+    },
+    {
+      "case_id": "TS-M-01",
+      "language": "typescript",
+      "repo": "sydes-examples/domain-driven-hexagon",
+      "pr_url": "https://github.com/sydes-examples/domain-driven-hexagon/pull/2",
+      "base_branch": "master",
+      "base_sha": "42b46d04687ae9bd640622099b719402f364dc77",
+      "head_sha": "98dd0d377a44c48f5c25015c1fa385837d3fffa1",
+      "changed_files": [
+        "src/libs/exceptions/exception.codes.ts",
+        "src/libs/exceptions/exceptions.ts",
+        "src/modules/user/commands/delete-user/delete-user.http-controller.ts",
+        "src/modules/user/commands/delete-user/delete-user.service.ts",
+        "tests/user/delete-user/delete-user.e2e-spec.ts",
+        "tests/user/delete-user/delete-user.feature"
+      ],
+      "expected_path": "DELETE /v1/users/:id (delete-user.http-controller.ts) -> CommandBus.execute(DeleteUserCommand) -> @CommandHandler DeleteUserService.execute (delete-user.service.ts) -> UserEntity.delete() / SqlRepositoryBase",
+      "ground_truth_tests": [
+        "delete-user.feature: \"I cannot delete a protected user\" (new scenario)"
+      ],
+      "preregistration_file": "examples/medium-v1/ts-m-01.yaml",
+      "local_test_result": "tsc --noEmit clean, eslint clean. e2e NOT locally executed: docker compose postgres image pull stalled (restricted registry network access in this sandbox), aborted rather than forced. Disclosed honestly in PR body; expected to run under CI which has Postgres available.",
+      "verification_gap": "e2e scenario is written as source but has not been observed passing anywhere yet. This is a real, disclosed gap per the preregistration's own O4 (existing tests incomplete) rating."
+    },
+    {
+      "case_id": "JAVA-M-01",
+      "language": "java",
+      "repo": "sydes-examples/spring-boot-demo",
+      "pr_url": "https://github.com/sydes-examples/spring-boot-demo/pull/2",
+      "base_branch": "master",
+      "base_sha": "dc5da86ac15d96fa5ae9bb05c02da95577ae54e3",
+      "head_sha": "61544331e943d39db2bfe9c9a3eab4879815d6cc",
+      "changed_files": [
+        "demo-rbac-security/src/main/java/com/xkcoding/rbac/security/service/MonitorService.java",
+        "demo-rbac-security/src/test/java/com/xkcoding/rbac/security/service/MonitorServiceTest.java"
+      ],
+      "expected_path": "DELETE /api/monitor/online/user/kickout (MonitorController.kickoutOnlineUser) -> MonitorService.kickout(names) -> RedisUtil.delete(redisKeys)",
+      "ground_truth_tests": [
+        "MonitorServiceTest (new)"
+      ],
+      "preregistration_file": "examples/medium-v1/java-m-01.yaml",
+      "local_test_result": "mvn -pl demo-rbac-security -am test -Dtest=MonitorServiceTest under a genuinely obtained JDK 8 (Temurin 8u504-b01 + Rosetta 2, installed locally this session): Tests run: 1, Failures: 0, Errors: 0 -- BUILD SUCCESS"
+    },
+    {
+      "case_id": "RS-M-01",
+      "language": "rust",
+      "repo": "sydes-examples/Rocket",
+      "pr_url": "https://github.com/sydes-examples/Rocket/pull/2",
+      "base_branch": "master",
+      "base_sha": "71f5eae101468c8f536981bfdd27725208f43b7a",
+      "head_sha": "770a7d414d5ae063ae8c8a0104633e8f0d1df17a",
+      "changed_files": [
+        "examples/todo/src/main.rs",
+        "examples/todo/src/tests.rs"
+      ],
+      "expected_path": "DELETE /todo/<id> (main.rs::delete) -> Task::delete_with_id (task.rs) -> [0 rows] -> Context::err (main.rs) -> Task::all (task.rs)",
+      "ground_truth_tests": [
+        "tests::test_delete_nonexistent_id_is_error"
+      ],
+      "preregistration_file": "examples/medium-v1/rs-m-01.yaml",
+      "local_test_result": "cargo test in examples/todo: 6/6 passed (5 existing + 1 new), ~2.7s"
+    }
+  ]
+}
