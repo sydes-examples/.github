@@ -1,0 +1,105 @@
+{
+  "case_id": "PY-S-02",
+  "language": "python",
+  "repo": "sydes-examples/Kokoro-FastAPI",
+  "pr": 2,
+  "base_sha": "5152e8b6e29bd8f1ddd68c62a1a2471b5b34fd44",
+  "head_sha": "310c6d9b03460d9fb9874889c1a3812f053fcb47",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/Kokoro-FastAPI/actions/runs/34257936243",
+  "run_id": "34257936243",
+  "timestamp": "2026-09-08T17:34:35Z",
+  "support_status": "PASS",
+  "expected_path": "POST /v1/audio/voices/combine -> combine_voices -> process_and_validate_voices",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "HIGH",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 3,
+    "changed_source_files": [
+      ".github/workflows/sydes.yml",
+      "api/src/routers/openai_compatible.py"
+    ],
+    "changed_test_files": [
+      "api/tests/test_openai_endpoints.py"
+    ],
+    "changed_symbols_count": 2,
+    "known_entrypoints": "174",
+    "http_entrypoints": "3",
+    "route_derived_entrypoints_added": "0",
+    "interface_bridge_edges_added": null,
+    "member_call_bridge_edges_added": null,
+    "cbm_index_mode_retried": false,
+    "accepted_impacts_count": 3,
+    "impacts_proven": 3,
+    "impacts_inferred": 0,
+    "accepted_impacts_detail": [
+      {
+        "label": "POST /audio/speech",
+        "status": "proven",
+        "changed_symbols": [
+          "process_and_validate_voices"
+        ]
+      },
+      {
+        "label": "POST /audio/voices/combine",
+        "status": "proven",
+        "changed_symbols": [
+          "process_and_validate_voices"
+        ]
+      },
+      {
+        "label": "POST /dev/captioned_speech",
+        "status": "proven",
+        "changed_symbols": [
+          "process_and_validate_voices"
+        ]
+      }
+    ],
+    "unresolved_changed_symbols": 0,
+    "affected_flows_count": 3,
+    "affected_flows_labels": [
+      "POST /audio/speech",
+      "POST /audio/voices/combine",
+      "POST /dev/captioned_speech"
+    ],
+    "obligations_count": 30,
+    "test_files_found": "37",
+    "test_cases_found": "294",
+    "test_frameworks_detected": "pytest",
+    "test_executions_count": 0,
+    "supporting_tests": [
+      "test_captioned_endpoint_403_when_voice_tags_disabled",
+      "test_captioned_endpoint_translates_ssml_input",
+      "test_captioned_ssml_without_voice_tags_is_rejected",
+      "test_captioned_streaming_over_pause_budget_is_400",
+      "test_combine_voices_rejects_excessive_weight",
+      "test_malformed_ssml_on_the_captioned_endpoint_is_a_400",
+      "test_malformed_voice_weights_are_rejected_up_front",
+      "test_ssml_kill_switch_403s_the_captioned_endpoint",
+      "test_voice_alias_applies_to_the_voice_parameter",
+      "test_weighted_combinations_pass_validation"
+    ],
+    "verification_gaps": [],
+    "code_findings_count": 0
+  },
+  "ground_truth_test": {
+    "name": "test_combine_voices_rejects_excessive_weight",
+    "discovered": true,
+    "mapped_or_selected": true,
+    "supporting_names_seen": [
+      "test_captioned_endpoint_403_when_voice_tags_disabled",
+      "test_captioned_endpoint_translates_ssml_input",
+      "test_captioned_ssml_without_voice_tags_is_rejected",
+      "test_captioned_streaming_over_pause_budget_is_400",
+      "test_combine_voices_rejects_excessive_weight",
+      "test_malformed_ssml_on_the_captioned_endpoint_is_a_400",
+      "test_malformed_voice_weights_are_rejected_up_front",
+      "test_ssml_kill_switch_403s_the_captioned_endpoint",
+      "test_voice_alias_applies_to_the_voice_parameter",
+      "test_weighted_combinations_pass_validation"
+    ]
+  },
+  "caveats": []
+}

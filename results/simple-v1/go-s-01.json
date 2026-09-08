@@ -1,0 +1,71 @@
+{
+  "case_id": "GO-S-01",
+  "language": "go",
+  "repo": "sydes-examples/simplebank",
+  "pr": 1,
+  "base_sha": "67ccf46a9bb3366ab95c1ebf07b8f02f93b3b563",
+  "head_sha": "630c2f8a8bb19eb70a1cee8d5aefe81954a1f212",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/simplebank/actions/runs/34257947305",
+  "run_id": "34257947305",
+  "timestamp": "2026-09-08T17:34:41Z",
+  "support_status": "PASS",
+  "expected_path": "POST /transfers -> Server.createTransfer -> Server.checkSufficientBalance",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "HIGH",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 3,
+    "changed_source_files": [
+      ".github/workflows/sydes.yml",
+      "api/transfer.go"
+    ],
+    "changed_test_files": [
+      "api/transfer_test.go"
+    ],
+    "changed_symbols_count": 3,
+    "known_entrypoints": "7",
+    "http_entrypoints": "1",
+    "route_derived_entrypoints_added": "7",
+    "interface_bridge_edges_added": null,
+    "member_call_bridge_edges_added": null,
+    "cbm_index_mode_retried": false,
+    "accepted_impacts_count": 1,
+    "impacts_proven": 1,
+    "impacts_inferred": 0,
+    "accepted_impacts_detail": [
+      {
+        "label": "POST /transfers",
+        "status": "proven",
+        "changed_symbols": [
+          "createTransfer"
+        ]
+      }
+    ],
+    "unresolved_changed_symbols": 2,
+    "affected_flows_count": 1,
+    "affected_flows_labels": [
+      "POST /transfers"
+    ],
+    "obligations_count": 7,
+    "test_files_found": "18",
+    "test_cases_found": "40",
+    "test_frameworks_detected": "go_test",
+    "test_executions_count": 0,
+    "supporting_tests": [
+      "TestTransferAPI"
+    ],
+    "verification_gaps": [],
+    "code_findings_count": 0
+  },
+  "ground_truth_test": {
+    "name": "TestTransferAPI (InsufficientBalance case)",
+    "discovered": true,
+    "mapped_or_selected": true,
+    "supporting_names_seen": [
+      "TestTransferAPI"
+    ]
+  },
+  "caveats": []
+}

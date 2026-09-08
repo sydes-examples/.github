@@ -1,0 +1,130 @@
+{
+  "case_id": "JAVA-S-01",
+  "language": "java",
+  "repo": "sydes-examples/spring-boot-demo",
+  "pr": 1,
+  "base_sha": "dc5da86ac15d96fa5ae9bb05c02da95577ae54e3",
+  "head_sha": "1a8d97581b51af71d58c52d7cf222d70779fb101",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/spring-boot-demo/actions/runs/34257973458",
+  "run_id": "34257973458",
+  "timestamp": "2026-09-08T17:34:56Z",
+  "support_status": "PASS",
+  "expected_path": "POST /user -> UserController.save -> IUserService.save -> UserServiceImpl.save",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 3,
+    "changed_source_files": [
+      ".github/workflows/sydes.yml",
+      "demo-orm-jdbctemplate/src/main/java/com/xkcoding/orm/jdbctemplate/service/impl/UserServiceImpl.java"
+    ],
+    "changed_test_files": [
+      "demo-orm-jdbctemplate/src/test/java/com/xkcoding/orm/jdbctemplate/service/impl/UserServiceImplTest.java"
+    ],
+    "changed_symbols_count": 3,
+    "known_entrypoints": "520",
+    "http_entrypoints": "1",
+    "route_derived_entrypoints_added": "0",
+    "interface_bridge_edges_added": "25",
+    "member_call_bridge_edges_added": null,
+    "cbm_index_mode_retried": false,
+    "accepted_impacts_count": 9,
+    "impacts_proven": 9,
+    "impacts_inferred": 0,
+    "accepted_impacts_detail": [
+      {
+        "label": "initData",
+        "status": "proven",
+        "changed_symbols": [
+          "save"
+        ]
+      },
+      {
+        "label": "addClientDetails",
+        "status": "proven",
+        "changed_symbols": [
+          "save"
+        ]
+      },
+      {
+        "label": "updateClientDetails",
+        "status": "proven",
+        "changed_symbols": [
+          "save"
+        ]
+      },
+      {
+        "label": "updateClientSecret",
+        "status": "proven",
+        "changed_symbols": [
+          "save"
+        ]
+      },
+      {
+        "label": "createUser",
+        "status": "proven",
+        "changed_symbols": [
+          "save"
+        ]
+      },
+      {
+        "label": "updatePassword",
+        "status": "proven",
+        "changed_symbols": [
+          "save"
+        ]
+      },
+      {
+        "label": "updateUser",
+        "status": "proven",
+        "changed_symbols": [
+          "save"
+        ]
+      },
+      {
+        "label": "save",
+        "status": "proven",
+        "changed_symbols": [
+          "save"
+        ]
+      },
+      {
+        "label": "POST /user",
+        "status": "proven",
+        "changed_symbols": [
+          "save"
+        ]
+      }
+    ],
+    "unresolved_changed_symbols": 0,
+    "affected_flows_count": 1,
+    "affected_flows_labels": [
+      "POST /user"
+    ],
+    "obligations_count": 8,
+    "test_files_found": "93",
+    "test_cases_found": "152",
+    "test_frameworks_detected": "none",
+    "test_executions_count": 0,
+    "supporting_tests": [
+      "UserServiceImplTest"
+    ],
+    "verification_gaps": [],
+    "code_findings_count": 0
+  },
+  "ground_truth_test": {
+    "name": "UserServiceImplTest validation test (UserServiceImplTest.saveRejectsBlankUsername / saveAcceptsNonBlankUsername)",
+    "discovered": true,
+    "mapped_or_selected": true,
+    "supporting_names_seen": [
+      "UserServiceImplTest"
+    ]
+  },
+  "caveats": [
+    "CBM reports 9 accepted impacts (vs. the genuine 2: `save`, `POST /user`) due to a known, separate, unfixed limitation: Spring Data / inherited repository `save()` calls (e.g. Neo4jRepository.save() in unrelated demo modules) get misattributed to the changed UserServiceImpl.save by CBM's own call-graph resolution. Not addressed in this rerun per explicit instruction.",
+    "Ground-truth test mapping in supporting_tests is class-level (`UserServiceImplTest`), not method-level (`saveRejectsBlankUsername`) \u2014 coarser granularity than Python/Go/TypeScript's function-level test mapping. Both changed test methods are correctly discovered as changed_nodes."
+  ]
+}

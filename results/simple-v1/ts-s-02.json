@@ -1,0 +1,79 @@
+{
+  "case_id": "TS-S-02",
+  "language": "typescript",
+  "repo": "sydes-examples/express-typescript-boilerplate",
+  "pr": 1,
+  "base_sha": "47009556730bda9211bcc7c4508ab4ba304c3dac",
+  "head_sha": "09336f3a7c08298f85f9f05fa34f18e2e9cc7593",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/express-typescript-boilerplate/actions/runs/34257961776",
+  "run_id": "34257961776",
+  "timestamp": "2026-09-08T17:34:49Z",
+  "support_status": "PASS",
+  "expected_path": "POST /pets -> PetController.create -> PetService.create",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "HIGH",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 4,
+    "changed_source_files": [
+      ".github/workflows/sydes.yml",
+      "src/api/errors/InvalidPetAgeError.ts",
+      "src/api/services/PetService.ts"
+    ],
+    "changed_test_files": [
+      "test/unit/services/PetService.test.ts"
+    ],
+    "changed_symbols_count": 2,
+    "known_entrypoints": "18",
+    "http_entrypoints": "0",
+    "route_derived_entrypoints_added": "0",
+    "interface_bridge_edges_added": null,
+    "member_call_bridge_edges_added": "14",
+    "cbm_index_mode_retried": false,
+    "accepted_impacts_count": 2,
+    "impacts_proven": 2,
+    "impacts_inferred": 0,
+    "accepted_impacts_detail": [
+      {
+        "label": "POST /pets",
+        "status": "proven",
+        "changed_symbols": [
+          "create"
+        ]
+      },
+      {
+        "label": "addPet",
+        "status": "proven",
+        "changed_symbols": [
+          "create"
+        ]
+      }
+    ],
+    "unresolved_changed_symbols": 1,
+    "affected_flows_count": 1,
+    "affected_flows_labels": [
+      "POST /pets"
+    ],
+    "obligations_count": 9,
+    "test_files_found": "18",
+    "test_cases_found": "27",
+    "test_frameworks_detected": "jest",
+    "test_executions_count": 0,
+    "supporting_tests": [
+      "PetService :: Create should reject a non-positive age"
+    ],
+    "verification_gaps": [],
+    "code_findings_count": 0
+  },
+  "ground_truth_test": {
+    "name": "PetService :: Create should reject a non-positive age",
+    "discovered": true,
+    "mapped_or_selected": true,
+    "supporting_names_seen": [
+      "PetService :: Create should reject a non-positive age"
+    ]
+  },
+  "caveats": []
+}

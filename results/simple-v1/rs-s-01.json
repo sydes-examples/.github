@@ -1,0 +1,82 @@
+{
+  "case_id": "RS-S-01",
+  "language": "rust",
+  "repo": "sydes-examples/Rocket",
+  "pr": 1,
+  "base_sha": "71f5eae101468c8f536981bfdd27725208f43b7a",
+  "head_sha": "cc36573771556c9d433939bce1f4e85afb179a3e",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/Rocket/actions/runs/34257985467",
+  "run_id": "34257985467",
+  "timestamp": "2026-09-08T17:35:02Z",
+  "support_status": "PARTIAL",
+  "expected_path": "POST / -> upload -> PasteId::new(ID_LENGTH)",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "analysis_status": "partial",
+    "code_review_status": "completed",
+    "changed_files_count": 3,
+    "changed_source_files": [
+      ".github/workflows/sydes.yml",
+      "examples/pastebin/src/paste_id.rs"
+    ],
+    "changed_test_files": [
+      "examples/pastebin/src/tests.rs"
+    ],
+    "changed_symbols_count": 2,
+    "known_entrypoints": "913",
+    "http_entrypoints": "0",
+    "route_derived_entrypoints_added": "2",
+    "interface_bridge_edges_added": null,
+    "member_call_bridge_edges_added": null,
+    "cbm_index_mode_retried": true,
+    "accepted_impacts_count": 3,
+    "impacts_proven": 1,
+    "impacts_inferred": 2,
+    "accepted_impacts_detail": [
+      {
+        "label": "DELETE /{id}",
+        "status": "inferred",
+        "changed_symbols": [
+          "new"
+        ]
+      },
+      {
+        "label": "GET /{id}",
+        "status": "inferred",
+        "changed_symbols": [
+          "new"
+        ]
+      },
+      {
+        "label": "POST /",
+        "status": "proven",
+        "changed_symbols": [
+          "new"
+        ]
+      }
+    ],
+    "unresolved_changed_symbols": 0,
+    "affected_flows_count": 0,
+    "affected_flows_labels": [],
+    "obligations_count": 0,
+    "test_files_found": "182",
+    "test_cases_found": "375",
+    "test_frameworks_detected": "none",
+    "test_executions_count": 0,
+    "supporting_tests": [],
+    "verification_gaps": [],
+    "code_findings_count": 0
+  },
+  "ground_truth_test": {
+    "name": "tests::new_rejects_zero_size",
+    "discovered": true,
+    "mapped_or_selected": false,
+    "supporting_names_seen": []
+  },
+  "caveats": [
+    "`affected_flows` is empty (0) \u2014 a separate, pre-existing gap: Rocket has no deterministic route recognizer feeding the rich flow-construction candidate list. The structural impact itself (`POST /` proven, changed symbol `new` reached via the real upload -> PasteId::new CALLS edge) is fully established at the accepted_impacts level. Accepted as PARTIAL for v1 per explicit instruction; no further Rust work attempted in this rerun.",
+    "Ground-truth test `new_rejects_zero_size` is discovered (present in change.symbols and described in pr_semantic_analysis) but not mapped to any obligation, since no obligations list exists without a constructed affected_flow."
+  ]
+}
