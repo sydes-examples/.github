@@ -64,14 +64,25 @@ _AREA_BY_BOUNDARY_KIND = {
     "unknown": "Other",
 }
 
-_OBLIGATION_KIND_LABEL = {
-    "route_contract": "API contract",
-    "validation": "Validation rule",
-    "side_effect": "Side effect",
+#: Verification is reported per high-level category, never per raw obligation
+#: statement (see `render_verification`) -- these are the only categories
+#: shown, in this fixed display order. `side_effect` has no entry: it is
+#: excluded everywhere obligations are read (see
+#: `_CODE_FRAGMENT_OBLIGATION_KINDS`).
+_OBLIGATION_CATEGORY_LABEL = {
+    "route_contract": "API behavior",
+    "validation": "Validation behavior",
+    "cross_repo_call": "Cross-service behavior",
     "state_consistency": "State consistency",
-    "event_emission": "Event emitted",
-    "cross_repo_call": "Cross-service call",
+    "event_emission": "Event emission",
 }
+_OBLIGATION_CATEGORY_ORDER = [
+    "route_contract",
+    "validation",
+    "cross_repo_call",
+    "state_consistency",
+    "event_emission",
+]
 
 _OBLIGATION_STATUS_LABEL = {
     "passed": "Verified",
@@ -79,6 +90,11 @@ _OBLIGATION_STATUS_LABEL = {
     "unverified": "Not yet run",
     "unknown": "Not fully traced",
 }
+
+#: When a category has more than one obligation, show the worst status
+#: across the group (a reviewer needs to know the worst case, not an
+#: arbitrary one) -- lower rank wins.
+_OBLIGATION_STATUS_RANK = {"failed": 0, "unverified": 1, "unknown": 2, "passed": 3}
 
 # A large fraction of `VerificationObligation.statement` values are
 # auto-generated route-contract boilerplate ("contract happy path", "POST
@@ -233,50 +249,165 @@ def _boundary_display_label(boundary: dict[str, Any]) -> str:
     return label or "Affected"
 
 
-def summarize_system_impact_areas(result: dict[str, Any]) -> list[tuple[str, str]]:
-    """Group `affected_boundaries` (and, when present, `runtime_dependencies`)
-    into a small `(area, impact description)` table using only the kind/
-    subtype classification the backend already assigns -- no new categories
-    are invented, and an area with no real boundary in it is never shown."""
-    boundaries = _as_list(_get(result, "affected_boundaries", default=[]))
-    by_area: dict[str, list[dict[str, Any]]] = {}
-    for b in boundaries:
-        area = _AREA_BY_BOUNDARY_KIND.get(str(_get(b, "kind", default="unknown")), "Other")
-        by_area.setdefault(area, []).append(b)
+def _impact_status_by_id(result: dict[str, Any]) -> dict[str, str]:
+    impacts = _as_list(_get(result, "accepted_impacts", default=[]))
+    return {str(_get(imp, "id", default="")): str(_get(imp, "status", default="")) for imp in impacts}
+
+
+def _flow_routes_by_status(
+    result: dict[str, Any], impact_status_by_id: dict[str, str]
+) -> tuple[list[str], list[str]]:
+    """All flow entry routes (e.g. `POST /users`), split into established vs
+    likely using the same `accepted_impacts` cross-reference used for the
+    representative-path rendering below -- deduped, in flow order."""
+    established: list[str] = []
+    likely: list[str] = []
+    seen: set[str] = set()
+    for flow in _as_list(_get(result, "affected_flows", default=[])):
+        route = str(_get(flow, "entry_label", default="") or "").strip()
+        if not route or route in seen:
+            continue
+        seen.add(route)
+        status = impact_status_by_id.get(str(_get(flow, "id", default="")), "proven")
+        (established if status == "proven" else likely).append(route)
+    return established, likely
+
+
+def _route_impact_row(established_routes: list[str], likely_routes: list[str]) -> tuple[str, str] | None:
+    """A concrete, descriptive 'API' row -- never a bare established/likely
+    count. One or two routes are named directly; three or more collapse to
+    a count (still a route count, not an internal analysis-state count)."""
+    parts: list[str] = []
+    if established_routes:
+        if len(established_routes) == 1:
+            parts.append(f"`{established_routes[0]}` impact established")
+        elif len(established_routes) == 2:
+            parts.append(f"`{established_routes[0]}` and `{established_routes[1]}` impact established")
+        else:
+            parts.append(f"{len(established_routes)} API routes affected (established)")
+    if likely_routes:
+        if len(likely_routes) == 1:
+            parts.append(f"`{likely_routes[0]}` likely affected, not fully traced")
+        else:
+            parts.append(f"{len(likely_routes)} more API routes likely affected, not fully traced")
+    return ("API", "; ".join(parts)) if parts else None
+
+
+def _boundary_groups_by_kind(result: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    by_kind: dict[str, list[dict[str, Any]]] = {}
+    for b in _as_list(_get(result, "affected_boundaries", default=[])):
+        by_kind.setdefault(str(_get(b, "kind", default="unknown")), []).append(b)
+    return by_kind
+
+
+def _describe_group(items: list[dict[str, Any]]) -> str:
+    """Describe one area's boundaries using their own label/status fields --
+    concrete for one item, still descriptive (never a bare count alone) for
+    two, and only falling back to a count when a group is large enough that
+    naming each one would be noise."""
+    established = [b for b in items if _boundary_status(b) == "proven"]
+    likely = [b for b in items if _boundary_status(b) != "proven"]
+    if len(items) == 1:
+        qualifier = "established" if established else "likely, not fully established"
+        return f"{_boundary_display_label(items[0])} ({qualifier})"
+    parts: list[str] = []
+    if established:
+        if len(established) == 1:
+            parts.append(f"{_boundary_display_label(established[0])} (established)")
+        else:
+            parts.append(f"{len(established)} established")
+    if likely:
+        if len(likely) == 1:
+            parts.append(f"{_boundary_display_label(likely[0])} (not fully traced)")
+        else:
+            parts.append(f"{len(likely)} not fully traced")
+    return "; ".join(parts)
+
+
+def _infrastructure_row(result: dict[str, Any]) -> tuple[str, str] | None:
+    """Only dependencies `runtime_dependencies` itself ties to the affected
+    flow (`scope == "affected_flow"`) are shown at the top level -- a
+    repository-wide dependency (`scope == "repository"`) was merely detected
+    somewhere in the codebase and says nothing about this change, so it is
+    dropped here rather than dumped as noise. This reads an existing field;
+    it does not change how runtime dependency analysis itself works."""
+    deps = _as_list(_get(result, "runtime_dependencies", default=[]))
+    flow_scoped = [d for d in deps if _get(d, "scope", default="") == "affected_flow"]
+    names = list(dict.fromkeys(str(_get(d, "name", default="")) for d in flow_scoped if _get(d, "name", default="")))
+    if not names:
+        return None
+    verb = "participates" if len(names) == 1 else "participate"
+    return ("Infrastructure", f"{', '.join(names)} {verb} in the changed behavior")
+
+
+def _system_impact_data(
+    result: dict[str, Any],
+) -> tuple[list[tuple[str, str]], list[str], bool]:
+    """The single source of truth for 'what did Sydes find' -- shared by the
+    System impact table and the Before-merge rules below so the two never
+    disagree. Returns (area rows, area names flagged as an unresolved wider
+    surface, whether any real impact signal exists at all)."""
+    impact_status_by_id = _impact_status_by_id(result)
+    established_routes, likely_routes = _flow_routes_by_status(result, impact_status_by_id)
+    flow_files: set[str] = set()
+    for flow in _as_list(_get(result, "affected_flows", default=[])):
+        refs = _get(flow, "artifact_refs", default={})
+        for key in ("route_file", "handler_file"):
+            f = _get(refs, key, default="") if isinstance(refs, dict) else ""
+            if f:
+                flow_files.add(str(f))
+        flow_file = _get(flow, "file", default="")
+        if flow_file:
+            flow_files.add(str(flow_file))
+
+    by_kind = _boundary_groups_by_kind(result)
+    api_boundaries = by_kind.pop("api", [])
 
     rows: list[tuple[str, str]] = []
-    for area, items in by_area.items():
-        established = [b for b in items if _boundary_status(b) == "proven"]
-        likely = [b for b in items if _boundary_status(b) != "proven"]
-        if len(items) == 1:
-            label = _boundary_display_label(items[0])
-            qualifier = "established" if established else "likely, not fully established"
-            rows.append((area, f"{label} ({qualifier})"))
-        else:
-            parts = []
-            if established:
-                parts.append(f"{len(established)} established")
-            if likely:
-                parts.append(f"{len(likely)} likely")
-            rows.append((area, ", ".join(parts) or f"{len(items)} affected"))
+    wider_areas: list[str] = []
 
-    # Fallback: some backends/changes populate affected_flows without ever
-    # populating affected_boundaries. Rather than showing an empty System
-    # impact section when real flow data exists, summarize flows into a
-    # single API row -- still grounded, never invented.
-    if not rows:
-        flows = _as_list(_get(result, "affected_flows", default=[]))
-        if flows:
-            rows.append(("API", f"{len(flows)} route(s) affected"))
+    route_row = _route_impact_row(established_routes, likely_routes)
+    if route_row:
+        rows.append(route_row)
+        # An `api`-kind boundary whose own source file is not one of the
+        # traced routes' files is a genuinely separate signal -- e.g. a
+        # shared auth filter the traced route passes through that also
+        # gates other, untraced routes. It must never be folded into the
+        # route count above (that would either overcount or hide it).
+        #
+        # Only worth checking at all when there is more than one distinct
+        # api boundary: with exactly one, it IS the boundary behind the
+        # route row above -- there is nothing "wider" to split out, and a
+        # mismatched file (route discovery can mis-locate a route file,
+        # e.g. a same-named handler in an unrelated example/crate) would
+        # otherwise duplicate that single boundary as a second, bogus row.
+        if len(api_boundaries) > 1:
+            extra = [b for b in api_boundaries if str(_get(b, "file", default="")).strip() not in flow_files]
+            if extra:
+                area = "Wider API surface"
+                rows.append((area, _describe_group(extra)))
+                wider_areas.append(area)
+    elif api_boundaries:
+        # No flow data at all for this change -- describe the api
+        # boundaries directly, same as any other kind below.
+        rows.append(("API", _describe_group(api_boundaries)))
 
-    deps = _as_list(_get(result, "runtime_dependencies", default=[]))
-    if deps:
-        names = [str(_get(d, "name", default="")) for d in deps if _get(d, "name", default="")]
-        names = list(dict.fromkeys(names))  # dedupe, keep order
-        if names:
-            rows.append(("Infrastructure", ", ".join(names[:5])))
+    for kind, items in by_kind.items():
+        if items:
+            rows.append((_AREA_BY_BOUNDARY_KIND.get(kind, "Other"), _describe_group(items)))
 
-    return rows[:_MAX_AREA_ROWS]
+    has_any_impact = bool(established_routes or likely_routes or api_boundaries or any(by_kind.values()))
+
+    infra = _infrastructure_row(result)
+    if infra:
+        rows.append(infra)
+
+    return rows[:_MAX_AREA_ROWS], wider_areas, has_any_impact
+
+
+def summarize_system_impact_areas(result: dict[str, Any]) -> list[tuple[str, str]]:
+    rows, _wider_areas, _has_any_impact = _system_impact_data(result)
+    return rows
 
 
 def _flow_path_label(flow: dict[str, Any], test_paths: set[str]) -> str:
@@ -322,9 +453,7 @@ def select_representative_paths(
     strings (inferred impacts rarely have a full traced chain to show)."""
     flows = _as_list(_get(result, "affected_flows", default=[]))
     impacts = _as_list(_get(result, "accepted_impacts", default=[]))
-    impact_status_by_id = {
-        str(_get(imp, "id", default="")): str(_get(imp, "status", default="")) for imp in impacts
-    }
+    impact_status_by_id = _impact_status_by_id(result)
     test_paths = _test_file_paths(result)
 
     established_all: list[list[str]] = []
@@ -372,7 +501,7 @@ def render_system_impact(result: dict[str, Any], lines: list[str]) -> None:
 
     area_rows = summarize_system_impact_areas(result)
     if area_rows:
-        lines.append("| Area | Impact |")
+        lines.append("| Area | Sydes found |")
         lines.append("| --- | --- |")
         for area, impact in area_rows:
             lines.append(f"| {area} | {impact} |")
@@ -397,15 +526,17 @@ def render_system_impact(result: dict[str, Any], lines: list[str]) -> None:
     if established:
         lines.append("**Established**")
         lines.append("")
-        for parts in established:
+        for idx, parts in enumerate(established):
             if len(parts) > 1:
                 lines.append("```text")
                 lines.append(parts[0])
                 for p in parts[1:]:
                     lines.append(f"  → {p}")
                 lines.append("```")
-                lines.append("")  # blank line between fences -- otherwise adjacent
-                                   # ```text blocks can render as one merged block
+                if idx < len(established) - 1:
+                    lines.append("")  # blank line between fences -- otherwise
+                                       # adjacent ```text blocks can render as
+                                       # one merged block
             else:
                 lines.append(f"- `{parts[0]}`")
         if established_more:
@@ -487,25 +618,41 @@ def _meaningful_obligations(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def render_verification(result: dict[str, Any], lines: list[str]) -> None:
-    """Human questions/status, not internal counters. Rows are only added
+    """Human questions/status, not internal counters -- and never a raw
+    obligation statement (empirically, real statements are inconsistent
+    enough across kinds -- code fragments, boilerplate, genuine prose --
+    that showing them verbatim reads as internal, not reviewer-facing; see
+    the module-level obligation-filtering notes above). Obligations are
+    grouped into a handful of fixed categories instead, one row per
+    category, using the worst status in that category. Rows are only added
     when the data supports them -- an empty checklist with just the two
     always-known test lines is a correct, honest render, not a bug."""
     counts = _get(result, "summary", "counts", default={})
-    meaningful = _meaningful_obligations(result)[:_MAX_CHECKLIST_ROWS]
+    meaningful = _meaningful_obligations(result)
+    by_category: dict[str, list[dict[str, Any]]] = {}
+    for obligation in meaningful:
+        kind = str(_get(obligation, "kind", default=""))
+        if kind in _OBLIGATION_CATEGORY_LABEL:
+            by_category.setdefault(kind, []).append(obligation)
 
     lines.append("### Verification")
     lines.append("")
-    lines.append("| Check | Status |")
+    lines.append("| Area | Status |")
     lines.append("| --- | --- |")
-    for obligation in meaningful:
-        kind_label = _OBLIGATION_KIND_LABEL.get(str(_get(obligation, "kind", default="")), "")
-        statement = _clean(_get(obligation, "statement", default=""), limit=100)
-        check = f"**{kind_label}:** {statement}" if kind_label else statement
-        status = _OBLIGATION_STATUS_LABEL.get(str(_get(obligation, "status", default="")), "Not fully traced")
-        lines.append(f"| {check} | {status} |")
+    rows_emitted = 0
+    for kind in _OBLIGATION_CATEGORY_ORDER:
+        items = by_category.get(kind)
+        if not items or rows_emitted >= _MAX_CHECKLIST_ROWS:
+            continue
+        worst = min(
+            items, key=lambda o: _OBLIGATION_STATUS_RANK.get(str(_get(o, "status", default="")), 2)
+        )
+        status = _OBLIGATION_STATUS_LABEL.get(str(_get(worst, "status", default="")), "Not fully traced")
+        lines.append(f"| {_OBLIGATION_CATEGORY_LABEL[kind]} | {status} |")
+        rows_emitted += 1
 
     mapped_tests = counts.get("mapped_tests", 0)
-    tests_row = "None" if mapped_tests == 0 else str(mapped_tests)
+    tests_row = "None identified" if mapped_tests == 0 else str(mapped_tests)
     lines.append(f"| Relevant tests | {tests_row} |")
 
     executed = counts.get("tests_executed", 0)
@@ -522,20 +669,40 @@ def render_verification(result: dict[str, Any], lines: list[str]) -> None:
 
 
 def render_before_merge(result: dict[str, Any], lines: list[str]) -> None:
-    """Only rendered when there is a concrete, evidence-based action to
-    suggest -- an unverified/unknown/failed obligation with a real
-    statement. Never fabricated, and omitted entirely (not padded) when
-    there's nothing concrete to say."""
-    meaningful = _meaningful_obligations(result)
-    actionable = [o for o in meaningful if str(_get(o, "status", default="")) != "passed"]
-    if not actionable:
+    """Only two deterministic, narrowly-scoped rules produce a bullet here --
+    both grounded in facts the renderer has already computed elsewhere, so
+    nothing is invented that isn't independently shown in System impact or
+    Verification:
+
+    1. A boundary was found in `System impact` that reaches beyond the
+       traced route(s) (the "Wider API surface" row) -- worth a reviewer's
+       explicit attention since it is, by definition, not covered by the
+       established path(s) above.
+    2. No relevant tests were identified at all for a change with a real,
+       found impact -- a safe, generic recommendation that never requires
+       guessing what the test should assert.
+
+    Reusing a raw obligation statement here (e.g. "Verify: malformed JSON
+    validation") was the exact awkward-bullet problem this rule replaces --
+    a fragment with no real sentence around it. When neither rule applies,
+    the section is omitted rather than padded with something ungrounded."""
+    _rows, wider_areas, has_any_impact = _system_impact_data(result)
+    counts = _get(result, "summary", "counts", default={})
+    mapped_tests = counts.get("mapped_tests", 0)
+
+    bullets: list[str] = []
+    if wider_areas:
+        bullets.append("Verify the changed behavior on the wider API surface before merging.")
+    if mapped_tests == 0 and has_any_impact:
+        bullets.append("Add or run a test covering the affected behavior before merging.")
+
+    if not bullets:
         return
 
     lines.append("### Before merge")
     lines.append("")
-    for obligation in actionable[:_MAX_BEFORE_MERGE]:
-        statement = _clean(_get(obligation, "statement", default=""), limit=140)
-        lines.append(f"- Verify: {statement}")
+    for bullet in bullets[:_MAX_BEFORE_MERGE]:
+        lines.append(f"- {bullet}")
     lines.append("")
 
 
@@ -613,9 +780,13 @@ def render_details(result: dict[str, Any], lines: list[str]) -> None:
     if coverage_note:
         body.append(f"**Coverage limit:** {coverage_note}")
 
+    # Same "tied to the change, not just present in the repo" bar as the
+    # top-level Infrastructure row (see `_infrastructure_row`) -- a
+    # repository-wide dependency is not "strong evidence" for this change.
     deps = _as_list(_get(result, "runtime_dependencies", default=[]))
-    if deps:
-        name = _get(deps[0], "name", default="")
+    flow_scoped_deps = [d for d in deps if _get(d, "scope", default="") == "affected_flow"]
+    if flow_scoped_deps:
+        name = _get(flow_scoped_deps[0], "name", default="")
         if name:
             body.append(f"**Key dependency:** {name}")
 

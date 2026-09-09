@@ -170,7 +170,7 @@ def test_many_likely_paths_are_truncated_deterministically():
 def test_no_mapped_tests_says_none_not_zero_confusingly():
     result = _load("real_inferred_only_no_tests.json")
     out = r.render(result)
-    assert "| Relevant tests | None |" in out
+    assert "| Relevant tests | None identified |" in out
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +364,182 @@ def test_markdown_stays_well_formed():
 def test_determinism_same_input_same_output():
     result = _load("real_established_and_inferred.json")
     assert r.render(result) == r.render(result)
+
+
+# ---------------------------------------------------------------------------
+# 13. System impact is descriptive, not a bare established/likely count
+#     (refinement pass: issue #1)
+# ---------------------------------------------------------------------------
+
+
+def test_system_impact_row_names_a_single_route_concretely():
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    assert "| API | `POST /pets` impact established |" in out
+    # The old count-only phrasing must never appear.
+    assert "1 established" not in out
+
+
+def test_system_impact_row_collapses_many_routes_to_a_route_count():
+    flows = [
+        _make_flow(f"flow:{i}", f"GET /resource/{i}", f"Handler{i}.get", f"Service{i}.fetch")
+        for i in range(10)
+    ]
+    impacts = [{"id": f"flow:{i}", "status": "proven"} for i in range(10)]
+    result = _base_result(affected_flows=flows, accepted_impacts=impacts)
+    out = r.render(result)
+    assert "| API | 10 API routes affected (established) |" in out
+
+
+# ---------------------------------------------------------------------------
+# 14. Wider API surface -- a boundary beyond the traced route(s)
+#     (refinement pass: issue #1, and a regression guard for a false
+#     positive found during this pass)
+# ---------------------------------------------------------------------------
+
+
+def test_wider_api_surface_shown_for_boundary_beyond_traced_route():
+    result = _base_result(
+        affected_flows=[
+            {
+                "id": "flow:a",
+                "entry_label": "POST /api/auth/logout",
+                "handler": "logout",
+                "changed_nodes": [{"repo": "app", "file": "AuthController.java", "symbol": "logout"}],
+                "artifact_refs": {"route_file": "AuthController.java", "handler_file": "AuthController.java"},
+                "obligations": [],
+            }
+        ],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        affected_boundaries=[
+            {"kind": "api", "symbol": "logout", "file": "AuthController.java", "status": "proven", "label": "logout"},
+            {
+                "kind": "api",
+                "symbol": "doFilterInternal",
+                "file": "JwtAuthenticationFilter.java",
+                "status": "inferred",
+                "label": "JWT authentication filter validates tokens including grace period logic",
+            },
+        ],
+    )
+    out = r.render(result)
+    assert "| Wider API surface | JWT authentication filter validates tokens including grace period logic (likely, not fully established) |" in out
+    assert "Verify the changed behavior on the wider API surface before merging." in out
+
+
+def test_single_api_boundary_never_produces_a_wider_surface_row():
+    """Regression guard: route discovery can mis-locate a route's file (a
+    same-named handler in an unrelated example/crate), so file mismatch
+    alone must not split a change's ONLY api boundary into a bogus second
+    'Wider API surface' row describing the same thing twice."""
+    result = _base_result(
+        affected_flows=[
+            {
+                "id": "flow:a",
+                "entry_label": "DELETE /",
+                "handler": "delete",
+                "changed_nodes": [{"repo": "app", "file": "unrelated/other.rs", "symbol": "delete"}],
+                "artifact_refs": {"route_file": "unrelated/other.rs", "handler_file": "unrelated/other.rs"},
+                "obligations": [],
+            }
+        ],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        affected_boundaries=[
+            {"kind": "api", "symbol": "delete", "file": "examples/todo/src/main.rs", "status": "proven", "label": "delete"},
+        ],
+    )
+    out = r.render(result)
+    assert "Wider API surface" not in out
+
+
+# ---------------------------------------------------------------------------
+# 15. Infrastructure -- only dependencies tied to the affected behavior
+#     (refinement pass: issue #4)
+# ---------------------------------------------------------------------------
+
+
+def test_infrastructure_row_omits_repository_wide_dependencies():
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        runtime_dependencies=[
+            {"name": "Redis", "scope": "affected_flow"},
+            {"name": "Elasticsearch", "scope": "repository"},
+        ],
+    )
+    out = r.render(result)
+    assert "| Infrastructure | Redis participates in the changed behavior |" in out
+    assert "Elasticsearch" not in out
+
+
+def test_infrastructure_row_omitted_when_no_dependency_is_flow_scoped():
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        runtime_dependencies=[{"name": "SQL database", "scope": "repository"}],
+    )
+    out = r.render(result)
+    assert "Infrastructure" not in out
+    assert "SQL database" not in out
+
+
+# ---------------------------------------------------------------------------
+# 16. Verification never leaks a raw obligation statement, only the
+#     high-level category (refinement pass: issue #2)
+# ---------------------------------------------------------------------------
+
+
+def test_verification_shows_category_not_raw_statement():
+    statement = "POST /pets enforces `if request.weight_kg > 999:` unusual-marker-xyz"
+    result = _base_result(
+        affected_flows=[
+            _make_flow(
+                "flow:a",
+                "POST /pets",
+                "PetController.create",
+                "PetService.create",
+                obligations=[_make_obligation("validation", statement, status="unknown")],
+            )
+        ],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    assert "| Validation behavior | Not fully traced |" in out
+    assert "unusual-marker-xyz" not in out
+    assert statement not in out
+
+
+# ---------------------------------------------------------------------------
+# 17. Before merge -- strict, deterministic rules only
+#     (refinement pass: issue #3)
+# ---------------------------------------------------------------------------
+
+
+def test_before_merge_never_dumps_a_raw_statement():
+    """The old '- Verify: <raw statement>' bullet is gone entirely -- every
+    real fixture must be free of it."""
+    for fixture in sorted(FIXTURES.glob("real_*.json")):
+        result = json.loads(fixture.read_text())
+        out = r.render(result)
+        assert "- Verify: " not in out, f"raw obligation bullet leaked in render of {fixture.name}"
+
+
+def test_before_merge_recommends_a_test_when_none_identified_and_impact_found():
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    assert "- Add or run a test covering the affected behavior before merging." in out
+
+
+def test_before_merge_omitted_when_no_impact_was_found_at_all():
+    result = _base_result()  # no flows, no boundaries, no impacts -- true zero signal
+    out = r.render(result)
+    assert "### Before merge" not in out
 
 
 def test_main_result_unavailable_path(tmp_path):
