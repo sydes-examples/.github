@@ -1,5 +1,17 @@
 # Hard-case suite (v1) — results
 
+> **Update (2026-09-09, release-prep):** TS-H-01's new e2e scenario was
+> subsequently run to a real green result
+> ([run](https://github.com/sydes-examples/domain-driven-hexagon/actions/runs/34295699305),
+> 8/8 tests passed), using the same temporary, since-removed CI-only
+> workaround as TS-M-01 (see `ts-h-01.json`'s `verification_update` field).
+> This does **not** change TS-H-01's support_status: the reason it is
+> FAIL/unsupported is structural (`affected_flows=0` — Sydes could not
+> connect `Address.validate()` back to `POST /v1/users` at all), independent
+> of whether the test itself passes. It is noted here only because the test
+> was previously, incorrectly listed as "discovered: false" — corrected to
+> "discovered: true, mapped: false" (Sydes never had a flow to map it to).
+
 Five hard-complexity calibration cases, one per language, implemented
 exactly per the frozen preregistration
 ([`examples/hard-v1/`](../../examples/hard-v1/), commit `15bbfbb`), then run

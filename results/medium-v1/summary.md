@@ -1,5 +1,15 @@
 # Medium-case suite (v1) — results
 
+> **Update (2026-09-09, release-prep):** TS-M-01's new e2e scenario, disclosed
+> at initial measurement as "written, not observed passing," was subsequently
+> run to a real green result
+> ([run](https://github.com/sydes-examples/domain-driven-hexagon/actions/runs/34295704254),
+> 8/8 tests passed) via a temporary, since-removed CI-only workflow. This
+> closes the sole reason TS-M-01 was PARTIAL rather than PASS — **TS-M-01 is
+> revised to PASS** below. See `ts-m-01.json`'s `verification_update` field
+> for the exact command/workaround. No other case or metric in this file
+> changed; the original canonical Sydes measurements are untouched.
+
 Five medium-complexity calibration cases, one per language, implemented exactly
 per the frozen preregistration
 ([`examples/medium-v1/`](../../examples/medium-v1/), commit `79a0c5f`), then run
@@ -15,7 +25,7 @@ reruns needed.
 |---|---|---|---|---|---|---|---|---|---|
 | PY-M-01 | Python | VERIFICATION INCOMPLETE | MEDIUM | 2 | 2 | 11 | yes | yes | **PASS** |
 | GO-M-01 | Go | VERIFICATION INCOMPLETE | MEDIUM | 0 (3 inferred) | 1 | 1 | yes | yes | **PARTIAL** |
-| TS-M-01 | TypeScript | VERIFICATION INCOMPLETE | HIGH | 1 (1 inferred) | 1 | 3 | yes | written, not observed passing | **PARTIAL** |
+| TS-M-01 | TypeScript | VERIFICATION INCOMPLETE | HIGH | 1 (1 inferred) | 1 | 3 | yes | yes (revised 2026-09-09, see note above) | **PASS** |
 | JAVA-M-01 | Java | VERIFICATION INCOMPLETE | MEDIUM | 1 | 1 | 2 | yes | yes | **PASS** |
 | RS-M-01 | Rust | VERIFICATION INCOMPLETE | MEDIUM | 4 (2 false-positive) | 3 | 3 | yes | yes | **PARTIAL** |
 
@@ -32,7 +42,7 @@ expected shape of this tool's output, not a failure signal.
 |---|---|---|---|
 | PY-M-01 | Yes — both routes proven | No | None; 3 unresolved symbols are the new test functions themselves (correctly not treated as production entrypoints) |
 | GO-M-01 | Partially — correct nodes located in the flow graph (CreateUserTx, CreateUser, TestCreateUserAPI) | No | Impact only reached "inferred" (LLM), never "proven" — an honest limit on proving a transactional/async-failure semantic change structurally |
-| TS-M-01 | **Yes, and notably** — DeleteUserService.execute appears in the *proven* flow's changed_nodes, meaning the `@nestjs/cqrs` CommandBus decorator dispatch was successfully bridged | No | New e2e test written but never observed passing (Docker/Postgres unavailable locally; Sydes itself never executes tests) |
+| TS-M-01 | **Yes, and notably** — DeleteUserService.execute appears in the *proven* flow's changed_nodes, meaning the `@nestjs/cqrs` CommandBus decorator dispatch was successfully bridged | No | None remaining — new e2e test confirmed passing 2026-09-09 (see update note above) |
 | JAVA-M-01 | Yes — clean single proven flow, new test method directly mapped | No | None |
 | RS-M-01 | Yes — DELETE /{id} (the real route) is among the proven flows | **Yes — two extra routes** ("DELETE /", "DELETE /file") from unrelated Cargo-workspace examples, confirmed by source inspection | Known Rust route-detection limitation (see Findings) |
 
@@ -52,14 +62,18 @@ a transactional-semantics fact, not something a pure call-graph proof can
 establish — and it was correctly *not* promoted to "proven" from LLM
 inference, respecting proof-semantics integrity.
 
-**TS-M-01 (PARTIAL, but with a genuinely positive structural finding).** The
-proven flow's `changed_nodes` includes `DeleteUserService.execute` — Sydes
-successfully traced through the `@nestjs/cqrs` `CommandBus`'s decorator-based
-dynamic dispatch, the exact structural challenge this case was chosen to
-probe. This is a meaningful positive result for TS/CQRS support. It is marked
-PARTIAL rather than PASS only because of a disclosed, real verification gap:
-the new e2e scenario was written as source but has never been observed
-passing anywhere (local Docker/Postgres pull stalled in this sandbox).
+**TS-M-01 (PASS, revised 2026-09-09).** The proven flow's `changed_nodes`
+includes `DeleteUserService.execute` — Sydes successfully traced through the
+`@nestjs/cqrs` `CommandBus`'s decorator-based dynamic dispatch, the exact
+structural challenge this case was chosen to probe. At initial measurement
+this was marked PARTIAL solely because the new e2e scenario had never been
+observed passing (local Docker/Postgres was unavailable in the sandbox). That
+gap has since been closed: the scenario now has a real, observed green run
+(8/8 tests passed) via a temporary CI-only workflow, using a pinned Postgres
+15 service container in place of the repo's own docker-compose.yml (whose
+floating `postgres:alpine` tag now resolves to Postgres 18+) and
+`--legacy-peer-deps` (a pre-existing `slonik`/`@slonik/migrator` conflict in
+the upstream repo). Neither workaround touched application or test code.
 
 **JAVA-M-01 (PASS).** Clean single proven flow. Notably, the brand-new
 `MonitorServiceTest.kickoutFiltersBlankAndDuplicateNames` — added against a
@@ -84,13 +98,13 @@ limitation, not a new architectural gap. **Not fixed**, per instructions.
 
 ## Support classification rationale
 
-- **PASS** (PY-M-01, JAVA-M-01): expected path fully and cleanly proven, GT
-  test correctly mapped, no false positives.
-- **PARTIAL** (GO-M-01, TS-M-01, RS-M-01): each has a genuine, disclosed
-  reason short of a clean pass — GO-M-01's impact only reached "inferred";
-  TS-M-01's structural trace is a clean pass but its new test has never been
-  observed passing; RS-M-01's correct route is contaminated by known-cause
-  false positives. None reflect a hidden or minimized failure.
+- **PASS** (PY-M-01, JAVA-M-01, TS-M-01 as of 2026-09-09): expected path
+  fully and cleanly proven, GT test correctly mapped and confirmed passing,
+  no false positives.
+- **PARTIAL** (GO-M-01, RS-M-01): each has a genuine, disclosed reason short
+  of a clean pass — GO-M-01's impact only reached "inferred"; RS-M-01's
+  correct route is contaminated by known-cause false positives. None reflect
+  a hidden or minimized failure.
 - No case reached **FAIL/unsupported** — none produced a wrong or absent
   expected path outright.
 

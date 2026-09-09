@@ -9,7 +9,8 @@
   "run_url": "https://github.com/sydes-examples/domain-driven-hexagon/actions/runs/34269931620",
   "run_id": "34269931620",
   "timestamp": "2026-09-08T19:37:50Z",
-  "support_status": "PARTIAL",
+  "support_status": "PASS",
+  "support_status_revision": "Revised from PARTIAL to PASS during release-prep (2026-09-09) after the previously-disclosed test-observation gap was closed -- see verification_update below. The original canonical Sydes run/metrics below are unchanged from the initial measurement.",
   "expected_path": "DELETE /v1/users/:id -> DeleteUserHttpController.deleteUser -> CommandBus.execute(DeleteUserCommand) -> @CommandHandler DeleteUserService.execute",
   "result_metrics": {
     "verdict": "VERIFICATION INCOMPLETE",
@@ -66,11 +67,19 @@
   "ground_truth_test": {
     "name": "delete-user.feature: \"I cannot delete a protected user\" (new scenario)",
     "discovered": true,
-    "mapped_or_selected": "written as source, NOT yet observed passing anywhere (local Docker/Postgres pull stalled in the sandbox, and this Sydes CI check does not execute test suites itself -- test_executions_count=0 across ALL FIVE medium cases, not specific to TS)",
+    "mapped_or_selected": true,
     "supporting_names_seen": []
   },
+  "verification_update": {
+    "date": "2026-09-09",
+    "observed_pass": true,
+    "run_url": "https://github.com/sydes-examples/domain-driven-hexagon/actions/runs/34295704254",
+    "command": "npx jest -i --config jest-e2e.json tests/user/create-user tests/user/delete-user",
+    "result": "Test Suites: 2 passed, 2 total. Tests: 8 passed, 8 total.",
+    "workaround_required": "A temporary, CI-only workflow (removed after use) ran the e2e suite via a GitHub Actions Postgres 15 service container instead of the repo's own docker-compose.yml (whose floating postgres:alpine tag now resolves to Postgres 18+, incompatible with the compose file's volume mount path). Also required npm install --legacy-peer-deps (pre-existing slonik/@slonik/migrator peer-dependency conflict in the upstream repo, unrelated to this change) instead of npm ci (package-lock.json is gitignored in this repo). No application or test code was changed for this verification -- both issues are pre-existing upstream infrastructure quirks, not related to the preregistered behavior."
+  },
   "caveats": [
-    "Real, disclosed verification gap: the new e2e scenario has never been observed passing (not locally, not yet in any CI run of the repo's own test workflow). The structural/CQRS-tracing result above is independently positive and should not be read as validating full behavioral correctness.",
-    "Protected-user rule implemented as: any user with role UserRoles.admin cannot be deleted (existing enum, no new entity fields added)."
+    "Protected-user rule implemented as: any user with role UserRoles.admin cannot be deleted (existing enum, no new entity fields added).",
+    "The structural/CQRS-tracing result (DeleteUserService.execute proven via CommandBus decorator dispatch) was already positive at initial measurement; this update closes the test-observation gap that was the sole reason this case was not already classified PASS."
   ]
 }

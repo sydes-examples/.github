@@ -35,9 +35,18 @@
     "test_frameworks_detected": "jest"
   },
   "ground_truth_test": {
-    "name": "delete-user.feature: postal code scenario (new)",
-    "discovered": false,
+    "name": "create-user.feature: \"I cannot create a user with an invalid postal code for their country\" (new scenario)",
+    "discovered": true,
     "mapped_or_selected": false
+  },
+  "verification_update": {
+    "date": "2026-09-09",
+    "observed_pass": true,
+    "run_url": "https://github.com/sydes-examples/domain-driven-hexagon/actions/runs/34295699305",
+    "command": "npx jest -i --config jest-e2e.json tests/user/create-user tests/user/delete-user",
+    "result": "Test Suites: 2 passed, 2 total. Tests: 8 passed, 8 total.",
+    "workaround_required": "Same CI-only Postgres-15-service-container workaround and npm --legacy-peer-deps flag as TS-M-01 (both pre-existing upstream infra quirks, unrelated to this change) -- see TS-M-01's verification_update for detail.",
+    "note": "The test itself is now confirmed passing. This does NOT change support_status: the reason this case is FAIL/unsupported is that Sydes' structural analysis could not connect Address.validate() back to POST /v1/users at all (affected_flows=0), independent of whether any test passes. mapped_or_selected remains false because Sydes itself never mapped this test to any flow (there was no flow to map it to)."
   },
   "caveats": [
     "CONFIRMED FINDING: affected_flows=0, the single changed symbol (Address.validate) never resolved to any HTTP flow. Unlike TS-M-01 (which traced FORWARD from a controller down through a CommandBus dispatch to a handler and proved it), this case required tracing BACKWARD/upward from a value object several layers below the command handler, through entity construction, back through the CQRS dispatch, to the controller -- and that direction of reachability was not achieved structurally.",
