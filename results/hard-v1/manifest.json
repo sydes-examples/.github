@@ -1,0 +1,126 @@
+{
+  "manifest_purpose": "Frozen record of all five hard-case patches, written BEFORE any Sydes canonical run against them, per the study's selection-before-observation rule.",
+  "preregistration_commit": "15bbfbb",
+  "preregistration_repo": "sydes-examples/.github",
+  "created_at": "2026-09-08T20:10:00Z",
+  "cases": [
+    {
+      "case_id": "PY-H-01",
+      "language": "python",
+      "repo": "sydes-examples/Kokoro-FastAPI",
+      "pr_url": "https://github.com/sydes-examples/Kokoro-FastAPI/pull/4",
+      "base_branch": "master",
+      "base_sha": "5152e8b6e29bd8f1ddd68c62a1a2471b5b34fd44",
+      "head_sha": "9c7819c6806c6c0d2b1bdbcb72e08ac91d961b22",
+      "changed_files": [
+        "api/src/services/text_processing/text_processor.py",
+        "api/src/routers/openai_compatible.py",
+        "api/tests/test_text_processor.py",
+        "api/tests/test_openai_endpoints.py"
+      ],
+      "expected_path": "POST /v1/audio/speech, POST /dev/captioned_speech -> ssml.py -> split_by_voice (text_processor.py) -> schemas.py::clamp_rate -> tts_service.py",
+      "ground_truth_tests": [
+        "test_baserate_persists_across_voice_change (new)",
+        "test_prosody_rate_gated_and_reverts",
+        "test_prosody_spanning_a_voice_reasserts_the_rate",
+        "test_split_by_rate_segments",
+        "test_split_voice_tag_resets_rate (unchanged -- did not encode baserate reset, only tag_rate)",
+        "test_alias_rate_expands_to_a_baserate_tag (collateral update -- see caveats)"
+      ],
+      "preregistration_file": "examples/hard-v1/py-h-01.yaml",
+      "local_test_result": "targeted suite (test_ssml/test_text_processor/test_tts_service): 95 passed. Full suite excluding integration/: 319 passed (clean-master baseline on this SHA re-measured at 318, so +1 net, no unrelated regressions)",
+      "caveats": [
+        "openai_compatible.py appears in the diff only for a docstring fix (no logic change), and test_openai_endpoints.py required one collateral assertion update (test_alias_rate_expands_to_a_baserate_tag: an uncalibrated alias following a calibrated one now inherits the baserate instead of reverting to 1.0) -- disclosed and intentional, not a hidden scope change."
+      ]
+    },
+    {
+      "case_id": "GO-H-01",
+      "language": "go",
+      "repo": "sydes-examples/simplebank",
+      "pr_url": "https://github.com/sydes-examples/simplebank/pull/3",
+      "base_branch": "master",
+      "base_sha": "67ccf46a9bb3366ab95c1ebf07b8f02f93b3b563",
+      "head_sha": "fc5837b81ff0adaa2118b2294b47258d336ef0bc",
+      "changed_files": [
+        "worker/task_send_verify_email.go",
+        "worker/task_send_verify_email_test.go"
+      ],
+      "expected_path": "asynq task consumer (non-HTTP entrypoint) -> ProcessTaskSendVerifyEmail -> store.GetUser -> [skip if already verified] -> store.CreateVerifyEmail -> mailer.SendEmail",
+      "ground_truth_tests": [
+        "TestProcessTaskSendVerifyEmail/AlreadyVerified (new)",
+        "TestProcessTaskSendVerifyEmail/NotYetVerified (new)"
+      ],
+      "preregistration_file": "examples/hard-v1/go-h-01.yaml",
+      "local_test_result": "go test ./worker/... -v: both new subtests PASS; go test ./gapi/... -v: all existing tests pass, no regressions",
+      "caveats": [
+        "New test file written as package worker (not worker_test) to access unexported RedisTaskProcessor fields directly, avoiding the need for a live Redis connection.",
+        "No existing mail.EmailSender mock existed -- a minimal hand-written mock was authored (disclosed in preregistration as an expected cost)."
+      ]
+    },
+    {
+      "case_id": "TS-H-01",
+      "language": "typescript",
+      "repo": "sydes-examples/domain-driven-hexagon",
+      "pr_url": "https://github.com/sydes-examples/domain-driven-hexagon/pull/3",
+      "base_branch": "master",
+      "base_sha": "42b46d04687ae9bd640622099b719402f364dc77",
+      "head_sha": "6682648145c837ba6267e23826577f0563e2d469",
+      "changed_files": [
+        "src/modules/user/domain/value-objects/address.value-object.ts",
+        "tests/user/create-user/create-user.e2e-spec.ts",
+        "tests/user/create-user/create-user.feature"
+      ],
+      "expected_path": "POST /v1/users -> CommandBus -> CreateUserService.execute -> new Address(...) -> Address.validate() [new US postal-code rule] -> UserEntity.create -> transactional insert",
+      "ground_truth_tests": [
+        "create-user.feature: \"I cannot create a user with an invalid postal code for their country\" (new scenario)"
+      ],
+      "preregistration_file": "examples/hard-v1/ts-h-01.yaml",
+      "local_test_result": "tsc --noEmit clean, eslint clean. e2e NOT locally executed end-to-end: docker-compose's postgres:alpine now resolves to Postgres 18+, incompatible with the repo's unmodified compose file's /var/lib/postgresql/data mount path (confirmed reproducible against a fresh volume, a pre-existing repo/infra issue unrelated to this change). Step-binding verified structurally correct via jest-cucumber (no binding errors; failures were ECONNREFUSED only).",
+      "verification_gap": "Same category of gap as TS-M-01 -- e2e scenario written as source, not yet observed passing anywhere. This case additionally surfaced a new, disclosed Docker-Compose/Postgres-version incompatibility in the repo's own (unmodified) infra."
+    },
+    {
+      "case_id": "JAVA-H-01",
+      "language": "java",
+      "repo": "sydes-examples/spring-boot-demo",
+      "pr_url": "https://github.com/sydes-examples/spring-boot-demo/pull/3",
+      "base_branch": "master",
+      "base_sha": "dc5da86ac15d96fa5ae9bb05c02da95577ae54e3",
+      "head_sha": "9ddef151da87d96e23b5a8c407c50c241945b98a",
+      "changed_files": [
+        "demo-rbac-security/src/main/java/com/xkcoding/rbac/security/util/JwtUtil.java",
+        "demo-rbac-security/src/test/java/com/xkcoding/rbac/security/util/JwtUtilTest.java"
+      ],
+      "expected_path": "JwtAuthenticationFilter -> JwtUtil.parseJWT [new previous-token grace window] -> CustomUserDetailsService -> RbacAuthorityService.hasPermission (cross-cutting, all authenticated routes)",
+      "ground_truth_tests": [
+        "JwtUtilTest (new, 3 test methods)"
+      ],
+      "preregistration_file": "examples/hard-v1/java-h-01.yaml",
+      "local_test_result": "mvn -pl demo-rbac-security -am test -Dtest=JwtUtilTest under genuinely obtained JDK 8 (Temurin 8u504-b01, extracted from a Homebrew cask cache, no sudo): Tests run: 3, Failures: 0, Errors: 0 -- BUILD SUCCESS"
+    },
+    {
+      "case_id": "RS-H-01",
+      "language": "rust",
+      "repo": "sydes-examples/realworld-axum-sqlx",
+      "pr_url": "https://github.com/sydes-examples/realworld-axum-sqlx/pull/1",
+      "base_branch": "main",
+      "base_sha_preregistered": "f1b25654773228297e35c292f357d33b7121a101",
+      "base_sha_actual_pr_base": "21d806098c59a364609b08c02f61ea3c0638ade2",
+      "base_sha_note": "PR base is one commit ahead of the preregistered SHA -- that commit is 'Add Sydes PR-verification workflow' (the fork-onboarding commit itself), exactly as anticipated in the preregistration file.",
+      "head_sha": "9ef5720a2c8b5128b024bb7095bd53d628fe4153",
+      "changed_files": ["src/http/extractor.rs"],
+      "expected_path": "AuthUser::from_authorization [new grace period after exp] -- consumed by 5+ handler files (users.rs, profiles.rs, articles/mod.rs, listing.rs, comments.rs)",
+      "ground_truth_tests": [
+        "token_with_future_exp_is_accepted (new)",
+        "token_within_grace_period_after_exp_is_accepted (new)",
+        "token_well_past_grace_period_is_rejected (new)"
+      ],
+      "preregistration_file": "examples/hard-v1/rs-h-01.yaml",
+      "local_test_result": "cargo test: 4 passed (3 new + 1 pre-existing test::slugify), 0 failed",
+      "caveats": [
+        "This is the first-ever PR/test in this newly forked repo.",
+        "connect_lazy required two non-obvious workarounds (idle_timeout(None)/max_lifetime(None), and entering a throwaway Tokio runtime around pool construction) -- disclosed in the PR, does not affect diff purity (only extractor.rs was touched).",
+        "sqlx::query! compile-time macros require a real migrated Postgres to compile at all -- a scratch Docker Postgres was used locally only to run `cargo test`, then torn down; nothing related was committed."
+      ]
+    }
+  ]
+}
