@@ -1,15 +1,31 @@
 #!/usr/bin/env python3
-"""Render a reviewer-facing Markdown summary from a Sydes result JSON.
+"""Render a reviewer-facing Markdown PR comment from a Sydes result JSON.
 
 Reads the machine-readable result written by `sydes verify-change --json` and
-emits the concise body used for both the PR comment and the Actions job
+emits the comment body used for both the PR comment and the Actions job
 summary.
 
-Diagnostics are deliberately never rendered here. CBM timings, graph-slice
-counts, route-graph internals, prompt sizes and guide counters belong in the
-job log and the uploaded artifact, not in a reviewer's PR conversation. This
-script reads only the user-facing fields, and tolerates any of them being
-absent so a partial or failed run still produces something readable.
+DESIGN INTENT (read this before changing section order or wording):
+
+The PR comment is a decision surface, not a metrics dump. It answers, in the
+order a reviewer actually needs them: what changed, what system behavior it
+reaches and through what logical path, how far Sydes could establish that
+propagation, what's still unverified, and what (if anything) to check before
+merging. Deep evidence -- full obligation lists, confidence scores, graph
+diagnostics, the complete symbol table -- belongs in the uploaded JSON
+artifact and (eventually) a dashboard, not here. A tiny, deliberately sparse
+<details> block carries a few grounding facts; it is not a second render of
+the whole result.
+
+Canonical Sydes vocabulary (`VERIFICATION INCOMPLETE`, `obligation`,
+`proven`/`inferred`, `unresolved`) is preserved everywhere in the underlying
+JSON and is NEVER changed by this script. Only the human-facing Markdown
+text translates it -- see _HUMAN_VERDICT / _HUMAN_RISK / the "Established"/
+"Likely"/"Not fully traced" vocabulary below. The word "obligation" never
+appears in rendered output.
+
+Everything here is deterministic: no LLM calls, no network calls, and the
+same input JSON always renders identically.
 
 Usage:
     render_sydes_pr.py RESULT_JSON --out comment.md
@@ -20,30 +36,69 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 MARKER = "<!-- sydes-verification-comment -->"
 
-#: Verdicts Sydes can report, and how they read at a glance. An unknown
-#: verdict still renders (with a neutral marker) rather than being dropped.
-_VERDICT_ICONS = {
-    "VERIFIED": "✅",
-    "VERIFICATION INCOMPLETE": "⚠️",
-    "ACTION REQUIRED": "❌",
+# ---------------------------------------------------------------------------
+# Canonical -> human vocabulary. Internal enums are never shown to a
+# reviewer; only these translations are.
+# ---------------------------------------------------------------------------
+
+_HUMAN_VERDICT = {
+    "VERIFIED": "Fully verified",
+    "VERIFICATION INCOMPLETE": "More verification needed",
+    "ACTION REQUIRED": "Action required",
+    "OK": "No affected behavior found",
 }
 
-_SEVERITY_ICONS = {"P0": "🔴", "P1": "🟠", "P2": "🟡", "P3": "⚪"}
+_HUMAN_RISK = {"LOW": "Low risk", "MEDIUM": "Medium risk", "HIGH": "High risk"}
 
-#: Keep the comment scannable; the full lists live in the JSON artifact.
-_MAX_BEHAVIOR_CHANGES = 5
-_MAX_TOP_BEHAVIOR_CHANGES = 2  # "What changed" is a glance, not the full list
-_MAX_AFFECTED_BEHAVIOR = 5
-_MAX_GAPS = 5
-_MAX_FINDINGS = 10
-_MAX_SYMBOLS = 15
-_MAX_IMPACTS = 10
-_MAX_NOTES = 6
+_AREA_BY_BOUNDARY_KIND = {
+    "api": "API",
+    "callable": "Service logic",
+    "async": "Background jobs",
+    "external": "External integration",
+    "unknown": "Other",
+}
+
+_OBLIGATION_KIND_LABEL = {
+    "route_contract": "API contract",
+    "validation": "Validation rule",
+    "side_effect": "Side effect",
+    "state_consistency": "State consistency",
+    "event_emission": "Event emitted",
+    "cross_repo_call": "Cross-service call",
+}
+
+_OBLIGATION_STATUS_LABEL = {
+    "passed": "Verified",
+    "failed": "Failed",
+    "unverified": "Not yet run",
+    "unknown": "Not fully traced",
+}
+
+# A large fraction of `VerificationObligation.statement` values are
+# auto-generated route-contract boilerplate ("contract happy path", "POST
+# /x responds 201 — Default 201 response skeleton.") with no reviewer value.
+# Filtering these out, rather than rendering every obligation, is what keeps
+# the Verification section from becoming another metrics dump.
+_BOILERPLATE_STATEMENT_RE = re.compile(
+    r"^contract happy path$|responds \d+ — Default \d+ response skeleton\.?$",
+    re.IGNORECASE,
+)
+
+# Deterministic truncation limits. These are the renderer's entire
+# "how much is too much" policy -- change them here, not ad hoc in a
+# render function.
+_MAX_ESTABLISHED_PATHS = 3
+_MAX_LIKELY_PATHS = 2
+_MAX_AREA_ROWS = 6
+_MAX_CHECKLIST_ROWS = 4
+_MAX_BEFORE_MERGE = 3
+_MAX_DETAIL_SYMBOLS = 5
 
 
 def _get(mapping: Any, *keys: str, default: Any = None) -> Any:
@@ -60,14 +115,23 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _clean(text: Any, limit: int = 500) -> str:
-    """Collapse a model-authored string to one safe, bounded Markdown line."""
+def _clean(text: Any, limit: int = 240) -> str:
+    """Collapse a model- or backend-authored string to one safe, bounded
+    Markdown line. Shorter default limit than before: this script no longer
+    renders long paragraphs outside the single `change_summary` line.
+
+    Truncates at a word boundary -- cutting mid-word ("...stronger inpu…")
+    reads as broken, not concise."""
     if not isinstance(text, str):
         return ""
     flattened = " ".join(text.split())
-    if len(flattened) > limit:
-        flattened = flattened[: limit - 1].rstrip() + "…"
-    return flattened
+    if len(flattened) <= limit:
+        return flattened
+    truncated = flattened[: limit - 1]
+    last_space = truncated.rfind(" ")
+    if last_space > limit * 0.6:  # only back off to the word boundary if it's not too far short
+        truncated = truncated[:last_space]
+    return truncated.rstrip().rstrip(".,;:") + "…"
 
 
 def _test_file_paths(result: dict[str, Any]) -> set[str]:
@@ -81,75 +145,153 @@ def _test_file_paths(result: dict[str, Any]) -> set[str]:
     return paths
 
 
-def _render_header(result: dict[str, Any], lines: list[str]) -> None:
+#: `analysis_notes` is a flat list mixing genuinely different concerns --
+#: structural/route-discovery notes, and separately, provider-availability
+#: notes (a missing API key, an LLM call failing) -- with no type tag to
+#: tell them apart programmatically. Blindly picking the first note can
+#: surface "OPENAI_API_KEY is not set" as if it explained why no system
+#: path was found, which is misleading when a real structural note (e.g.
+#: "No discovered route declaration reaches the changed symbols.") is
+#: also present later in the same list.
+_PROVIDER_NOTE_MARKERS = ("api_key", "provider", "code review was requested")
+
+
+def _pick_analysis_note(result: dict[str, Any], limit: int = 200) -> str:
+    """The single most reviewer-relevant analysis note, if any: prefers a
+    structural note over a provider-availability one, but still returns a
+    provider note rather than nothing if that's all there is."""
+    notes = [_clean(n, limit=limit) for n in _as_list(_get(result, "analysis_notes", default=[]))]
+    notes = [n for n in notes if n]
+    if not notes:
+        return ""
+    structural = [n for n in notes if not any(m in n.lower() for m in _PROVIDER_NOTE_MARKERS)]
+    return structural[0] if structural else notes[0]
+
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+
+
+def render_header(result: dict[str, Any], lines: list[str]) -> None:
     verdict = str(_get(result, "summary", "verdict", default="UNKNOWN"))
     risk = str(_get(result, "summary", "risk", default="UNKNOWN"))
-    analysis = str(_get(result, "analysis_status", default="unknown")).upper()
-    icon = _VERDICT_ICONS.get(verdict, "ℹ️")
+    human_verdict = _HUMAN_VERDICT.get(verdict, verdict.capitalize())
+    human_risk = _HUMAN_RISK.get(risk, risk.capitalize() + " risk" if risk != "UNKNOWN" else "Risk unknown")
 
-    lines.append("## Sydes verification")
+    lines.append("## Sydes")
     lines.append("")
-    lines.append("| | |")
-    lines.append("| --- | --- |")
-    lines.append(f"| **Verdict** | {icon} `{verdict}` |")
-    lines.append(f"| **Risk** | `{risk}` |")
-    lines.append(f"| **Analysis** | `{analysis}` |")
-    lines.append("")
-
-    headline = _clean(_get(result, "summary", "headline", default=""))
-    if headline:
-        lines.append(f"> {headline}")
-        lines.append("")
-
-    # The check and the verdict answer different questions; say so plainly so a
-    # green check next to an incomplete verdict does not read as a contradiction.
-    lines.append(
-        "_The check reports whether Sydes ran successfully. The verdict reports what Sydes "
-        "could establish — a passing check with an incomplete verdict is expected, not a failure._"
-    )
+    lines.append(f"**{human_verdict}** · {human_risk}")
     lines.append("")
 
 
-def _render_change(result: dict[str, Any], lines: list[str]) -> None:
-    analysis = _get(result, "pr_semantic_analysis", default={})
-    summary = _clean(_get(analysis, "change_summary", default=""), limit=700)
-    behaviors = _as_list(_get(analysis, "behavior_changes", default=[]))
-    if not summary and not behaviors:
+# ---------------------------------------------------------------------------
+# What changed
+# ---------------------------------------------------------------------------
+
+
+def render_change(result: dict[str, Any], lines: list[str]) -> None:
+    """One grounded, plain-English paragraph. No confidence numbers, no
+    per-behavior-change bullet list here -- individual behavior changes
+    that matter are what System impact exists to show, with an actual
+    path attached, not a restated sentence."""
+    summary = _clean(_get(result, "pr_semantic_analysis", "change_summary", default=""), limit=600)
+    if not summary:
         return
-
     lines.append("### What changed")
     lines.append("")
-    if summary:
-        lines.append(summary)
-        lines.append("")
-    # Keep this section to a glance: 1-2 concrete bullets, not every behavior
-    # change the analysis produced. The full list still lives in the
-    # collapsed technical details below.
-    for item in behaviors[:_MAX_TOP_BEHAVIOR_CHANGES]:
-        description = _clean(_get(item, "description", default=""))
-        if not description:
-            continue
-        lines.append(f"- {description}")
+    lines.append(summary)
     lines.append("")
+
+
+# ---------------------------------------------------------------------------
+# System impact -- the centerpiece.
+# ---------------------------------------------------------------------------
+
+
+def _boundary_status(boundary: dict[str, Any]) -> str:
+    return str(_get(boundary, "status", default="proven"))
+
+
+# A raw CBM-style qualified identifier (a repo-path-prefixed dotted symbol
+# name used internally for identity matching) occasionally ends up as a
+# boundary's only `label` when no better human description was available.
+# It is never meant for display -- e.g.
+# "home-runner-work-Rocket-Rocket.examples.todo.src.main.delete" -- so
+# detect that shape and fall back to the boundary's own `symbol` field,
+# which is always a plain, short name.
+_RAW_IDENTIFIER_LABEL_RE = re.compile(r"[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+){3,}$")
+
+
+def _boundary_display_label(boundary: dict[str, Any]) -> str:
+    label = _clean(_get(boundary, "label", default=""), limit=90)
+    if label and not _RAW_IDENTIFIER_LABEL_RE.match(label.replace(" ", "")):
+        return label
+    symbol = str(_get(boundary, "symbol", default="") or "").strip()
+    if symbol:
+        return f"`{symbol}`"
+    return label or "Affected"
+
+
+def summarize_system_impact_areas(result: dict[str, Any]) -> list[tuple[str, str]]:
+    """Group `affected_boundaries` (and, when present, `runtime_dependencies`)
+    into a small `(area, impact description)` table using only the kind/
+    subtype classification the backend already assigns -- no new categories
+    are invented, and an area with no real boundary in it is never shown."""
+    boundaries = _as_list(_get(result, "affected_boundaries", default=[]))
+    by_area: dict[str, list[dict[str, Any]]] = {}
+    for b in boundaries:
+        area = _AREA_BY_BOUNDARY_KIND.get(str(_get(b, "kind", default="unknown")), "Other")
+        by_area.setdefault(area, []).append(b)
+
+    rows: list[tuple[str, str]] = []
+    for area, items in by_area.items():
+        established = [b for b in items if _boundary_status(b) == "proven"]
+        likely = [b for b in items if _boundary_status(b) != "proven"]
+        if len(items) == 1:
+            label = _boundary_display_label(items[0])
+            qualifier = "established" if established else "likely, not fully established"
+            rows.append((area, f"{label} ({qualifier})"))
+        else:
+            parts = []
+            if established:
+                parts.append(f"{len(established)} established")
+            if likely:
+                parts.append(f"{len(likely)} likely")
+            rows.append((area, ", ".join(parts) or f"{len(items)} affected"))
+
+    # Fallback: some backends/changes populate affected_flows without ever
+    # populating affected_boundaries. Rather than showing an empty System
+    # impact section when real flow data exists, summarize flows into a
+    # single API row -- still grounded, never invented.
+    if not rows:
+        flows = _as_list(_get(result, "affected_flows", default=[]))
+        if flows:
+            rows.append(("API", f"{len(flows)} route(s) affected"))
+
+    deps = _as_list(_get(result, "runtime_dependencies", default=[]))
+    if deps:
+        names = [str(_get(d, "name", default="")) for d in deps if _get(d, "name", default="")]
+        names = list(dict.fromkeys(names))  # dedupe, keep order
+        if names:
+            rows.append(("Infrastructure", ", ".join(names[:5])))
+
+    return rows[:_MAX_AREA_ROWS]
 
 
 def _flow_path_label(flow: dict[str, Any], test_paths: set[str]) -> str:
-    """Build a route → handler → changed-symbol label for one affected flow,
-    the concrete, reviewer-legible form of "what this change reaches" —
-    e.g. `POST /pets` → `PetController.create` → `PetService.create`.
+    """Build a route -> handler -> changed-symbol label for one affected
+    flow -- the concrete, reviewer-legible form of "what this change
+    reaches", e.g. `POST /pets` -> `PetController.create` -> `PetService.create`.
 
     The changed symbol shown must be a PRODUCTION symbol, not a test: a
     flow's `changed_nodes` mixes the production symbol(s) actually changed
     with any newly-added/updated test functions, in diff order rather than
-    call-depth order -- showing a test function here would misrepresent
-    what the change actually reaches. When more than one production symbol
-    is present, the LAST one is shown: in practice this tends to be the
-    deeper, service-layer symbol (the one closest to "what the business
-    logic does") rather than a controller-level symbol already shown as
-    the handler above. If no production symbol exists beyond the handler
-    itself (the change lives entirely inside the handler function), the
-    path is left at route → handler with no third segment -- a shorter,
-    honest label beats padding it out with an unrelated test name."""
+    call-depth order. When more than one production symbol is present, the
+    LAST one is shown -- in practice the deeper, service-layer symbol
+    rather than a controller-level symbol already shown as the handler. If
+    no production symbol exists beyond the handler itself, the path is
+    left at route -> handler with no third segment."""
     parts = [str(_get(flow, "entry_label", default="") or "").strip()]
     handler = str(_get(flow, "handler", default="") or "").strip()
     if handler and handler != parts[0]:
@@ -165,122 +307,250 @@ def _flow_path_label(flow: dict[str, Any], test_paths: set[str]) -> str:
             production_symbol = symbol  # keep overwriting -- last one wins
     if production_symbol:
         parts.append(production_symbol)
-    return " → ".join(f"`{p}`" for p in parts if p)
+    return parts
 
 
-def _render_affected_behavior(result: dict[str, Any], lines: list[str]) -> None:
-    """The section a reviewer actually needs: concrete, labeled paths, not
-    aggregate counts. A flow only renders as a plain, unqualified path if
-    its matching `accepted_impacts` entry is actually `proven` -- a flow
-    can appear in `affected_flows` (a traced candidate graph) while its
-    impact classification is still `inferred`, and that distinction must
-    never be flattened away here. Impacts that never resolved to a
-    structural flow at all render as explicitly `(inferred)` too, so the
-    two kinds of evidence are never visually conflated."""
+def select_representative_paths(
+    result: dict[str, Any],
+) -> tuple[list[list[str]], list[str], int, int]:
+    """Deterministic representative-path selection -- the rule that keeps a
+    20-route change from dumping 20 paths into the comment.
+
+    Returns (established_paths, likely_labels, established_remaining,
+    likely_remaining). `established_paths` are route->handler->symbol part
+    lists (for the fenced/tree rendering); `likely_labels` are plain
+    strings (inferred impacts rarely have a full traced chain to show)."""
     flows = _as_list(_get(result, "affected_flows", default=[]))
     impacts = _as_list(_get(result, "accepted_impacts", default=[]))
-    impact_status_by_id = {str(_get(imp, "id", default="")): str(_get(imp, "status", default="")) for imp in impacts}
-    shown_impact_ids: set[str] = set()
+    impact_status_by_id = {
+        str(_get(imp, "id", default="")): str(_get(imp, "status", default="")) for imp in impacts
+    }
     test_paths = _test_file_paths(result)
 
-    lines.append("### Affected behavior")
-    lines.append("")
+    established_all: list[list[str]] = []
+    likely_all: list[str] = []
+    shown_impact_ids: set[str] = set()
 
-    shown = 0
-    for flow in flows[:_MAX_AFFECTED_BEHAVIOR]:
-        label = _flow_path_label(flow, test_paths)
-        if not label:
+    for flow in flows:
+        parts = _flow_path_label(flow, test_paths)
+        if not parts or not parts[0]:
             continue
         flow_id = str(_get(flow, "id", default=""))
         shown_impact_ids.add(flow_id)
-        status = impact_status_by_id.get(flow_id, "proven")  # no matching impact => trust the flow itself
-        suffix = "" if status == "proven" else " _(inferred, not fully proven)_"
-        lines.append(f"- {label}{suffix}")
-        shown += 1
+        status = impact_status_by_id.get(flow_id, "proven")
+        if status == "proven":
+            established_all.append(parts)
+        else:
+            likely_all.append(" → ".join(parts))
 
-    # Impacts the LLM accepted but that never became a structurally-traced
-    # flow are real signal too (that's the whole point of `inferred`) --
-    # show them, clearly marked, rather than silently dropping them here
-    # and only surfacing them in the collapsed details.
-    inferred_only = [
-        imp
-        for imp in impacts
-        if str(_get(imp, "id", default="")) not in shown_impact_ids
-        and str(_get(imp, "status", default="")) == "inferred"
-    ]
-    for impact in inferred_only[: max(0, _MAX_AFFECTED_BEHAVIOR - shown)]:
-        label = _clean(_get(impact, "behavior_label", default="")) or _clean(
-            _get(impact, "label", default="")
+    for impact in impacts:
+        if str(_get(impact, "id", default="")) in shown_impact_ids:
+            continue
+        if str(_get(impact, "status", default="")) != "inferred":
+            continue
+        label = _clean(_get(impact, "behavior_label", default=""), limit=100) or _clean(
+            _get(impact, "label", default=""), limit=100
         )
         if label:
-            lines.append(f"- `{label}` _(inferred, not structurally traced)_")
-            shown += 1
+            likely_all.append(label)
 
-    if shown == 0:
-        lines.append("- No affected behavior could be structurally traced or inferred for this change.")
+    established = established_all[:_MAX_ESTABLISHED_PATHS]
+    likely = likely_all[:_MAX_LIKELY_PATHS]
+    return (
+        established,
+        likely,
+        max(0, len(established_all) - len(established)),
+        max(0, len(likely_all) - len(likely)),
+    )
+
+
+def render_system_impact(result: dict[str, Any], lines: list[str]) -> None:
+    """The section a reviewer actually needs: what area of the system this
+    reaches, and through what logical path -- not aggregate counts."""
+    lines.append("### System impact")
     lines.append("")
 
+    area_rows = summarize_system_impact_areas(result)
+    if area_rows:
+        lines.append("| Area | Impact |")
+        lines.append("| --- | --- |")
+        for area, impact in area_rows:
+            lines.append(f"| {area} | {impact} |")
+        lines.append("")
 
-def _render_verification(result: dict[str, Any], lines: list[str]) -> None:
-    """Only the three facts a reviewer needs about test coverage. Everything
-    else Sydes tracks (file/symbol counts, obligation-status breakdowns,
-    the production/test split) is real signal but internal-metrics-shaped —
-    it lives in the collapsed technical details, not here."""
+    established, likely, established_more, likely_more = select_representative_paths(result)
+
+    if not established and not likely:
+        # Nothing resolved at all -- this must never read as "nothing is
+        # affected". Say plainly that tracing did not reach anything, and
+        # cite the real reason when one is available.
+        reason = _pick_analysis_note(result, limit=160)
+        lines.append(
+            "Sydes could not establish a system path from the changed code to any "
+            "entrypoint for this change."
+        )
+        if reason:
+            lines.append(f"_{reason}_")
+        lines.append("")
+        return
+
+    if established:
+        lines.append("**Established**")
+        lines.append("")
+        for parts in established:
+            if len(parts) > 1:
+                lines.append("```text")
+                lines.append(parts[0])
+                for p in parts[1:]:
+                    lines.append(f"  → {p}")
+                lines.append("```")
+                lines.append("")  # blank line between fences -- otherwise adjacent
+                                   # ```text blocks can render as one merged block
+            else:
+                lines.append(f"- `{parts[0]}`")
+        if established_more:
+            lines.append(f"_…and {established_more} more established path(s) in the full result._")
+        lines.append("")
+
+    if likely:
+        lines.append("**Likely, not fully established**")
+        lines.append("")
+        for label in likely:
+            lines.append(f"- {label}")
+        if likely_more:
+            lines.append(f"_…and {likely_more} more likely impact(s) in the full result._")
+        lines.append("")
+
+
+# ---------------------------------------------------------------------------
+# Verification
+# ---------------------------------------------------------------------------
+
+
+#: `kind == "side_effect"` obligations are generated from the template
+#: "{route} accessed {raw source expression}" -- confirmed across every
+#: language and case inspected (Go, Java, Rust, TypeScript all follow it
+#: exactly). The statement is a literal code fragment BY CONSTRUCTION, not
+#: sometimes; there is no clean-vs-messy split within this kind to detect,
+#: so it is excluded entirely rather than truncated into a half-cut
+#: snippet. This is a data-shape observation, not a semantic judgment
+#: about side effects being unimportant -- see the module docstring's
+#: scope note: rendering can't parse code to produce a clean claim, and
+#: showing a raw fragment reads worse than omitting it.
+_CODE_FRAGMENT_OBLIGATION_KINDS = {"side_effect"}
+
+
+def _real_statement_obligations(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Obligations with a real, specific, reviewer-legible statement --
+    filtering out both the generic route-contract boilerplate ("contract
+    happy path", "responds 201 — Default 201 response skeleton.") and the
+    code-fragment-by-construction kinds (see
+    `_CODE_FRAGMENT_OBLIGATION_KINDS`). Deduplicated by (kind, statement)
+    since the same generic-shaped claim can otherwise repeat once per
+    flow."""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for flow in _as_list(_get(result, "affected_flows", default=[])):
+        for obligation in _as_list(_get(flow, "obligations", default=[])):
+            kind = str(_get(obligation, "kind", default=""))
+            if kind in _CODE_FRAGMENT_OBLIGATION_KINDS:
+                continue
+            statement = str(_get(obligation, "statement", default="") or "").strip()
+            if not statement or _BOILERPLATE_STATEMENT_RE.search(statement):
+                continue
+            key = (kind, statement[:80])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(obligation)
+    return out
+
+
+def _meaningful_obligations(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """The obligations worth showing a reviewer at all.
+
+    `VerificationObligation.introduced_by_change` is the backend's own
+    signal for "this claim exists specifically because of this diff" as
+    opposed to a pre-existing, generic obligation on the same route (e.g. a
+    change to pause-duration validation does not make an unrelated
+    `allow_voice_tags` route check something THIS PR needs verifying). When
+    that flag is populated for this result, trust it completely and show
+    only those. It is not always populated by every analysis path, though
+    (confirmed empirically: several real results have zero obligations
+    flagged `introduced_by_change=True` despite having real, specific
+    statements) -- in that case, fall back to every real (non-boilerplate)
+    statement, on the honest assumption that an unpopulated flag is a data
+    gap, not a claim that nothing here relates to the change."""
+    real = _real_statement_obligations(result)
+    introduced = [o for o in real if _get(o, "introduced_by_change", default=False)]
+    return introduced if introduced else real
+
+
+def render_verification(result: dict[str, Any], lines: list[str]) -> None:
+    """Human questions/status, not internal counters. Rows are only added
+    when the data supports them -- an empty checklist with just the two
+    always-known test lines is a correct, honest render, not a bug."""
     counts = _get(result, "summary", "counts", default={})
+    meaningful = _meaningful_obligations(result)[:_MAX_CHECKLIST_ROWS]
 
     lines.append("### Verification")
     lines.append("")
-    lines.append(f"- {counts.get('mapped_tests', 0)} relevant test(s) found")
-    obligations = counts.get("obligations", 0)
-    if obligations:
-        directly_covering = counts.get("obligations_passed", 0) + counts.get("obligations_failed", 0)
-        lines.append(f"- {directly_covering} test(s) directly cover this change")
-    lines.append(f"- {counts.get('tests_executed', 0)} test(s) executed by Sydes")
+    lines.append("| Check | Status |")
+    lines.append("| --- | --- |")
+    for obligation in meaningful:
+        kind_label = _OBLIGATION_KIND_LABEL.get(str(_get(obligation, "kind", default="")), "")
+        statement = _clean(_get(obligation, "statement", default=""), limit=100)
+        check = f"**{kind_label}:** {statement}" if kind_label else statement
+        status = _OBLIGATION_STATUS_LABEL.get(str(_get(obligation, "status", default="")), "Not fully traced")
+        lines.append(f"| {check} | {status} |")
+
+    mapped_tests = counts.get("mapped_tests", 0)
+    tests_row = "None" if mapped_tests == 0 else str(mapped_tests)
+    lines.append(f"| Relevant tests | {tests_row} |")
+
+    executed = counts.get("tests_executed", 0)
+    # "Not run" is a deliberate, quiet phrasing for the common --no-run-tests
+    # case -- it must never read as a failure.
+    executed_label = "Not run" if executed == 0 else f"{executed} run"
+    lines.append(f"| Tests executed by Sydes | {executed_label} |")
     lines.append("")
 
 
-def _render_gaps(result: dict[str, Any], lines: list[str]) -> None:
-    gaps = _as_list(_get(result, "verification_gaps", default=[]))
-    reasons = [_clean(item) for item in _as_list(_get(result, "summary", "risk_reasons", default=[]))]
+# ---------------------------------------------------------------------------
+# Before merge
+# ---------------------------------------------------------------------------
 
-    lines.append("### What remains unverified")
+
+def render_before_merge(result: dict[str, Any], lines: list[str]) -> None:
+    """Only rendered when there is a concrete, evidence-based action to
+    suggest -- an unverified/unknown/failed obligation with a real
+    statement. Never fabricated, and omitted entirely (not padded) when
+    there's nothing concrete to say."""
+    meaningful = _meaningful_obligations(result)
+    actionable = [o for o in meaningful if str(_get(o, "status", default="")) != "passed"]
+    if not actionable:
+        return
+
+    lines.append("### Before merge")
     lines.append("")
-    if gaps:
-        for gap in gaps[:_MAX_GAPS]:
-            behavior = _clean(_get(gap, "behavior", default="(unnamed behavior)"))
-            status = _get(gap, "status", default="")
-            why = _clean(_get(gap, "why", default=""))
-            entry = f"- **{behavior}**"
-            if status:
-                entry += f" — `{status}`"
-            lines.append(entry)
-            if why:
-                lines.append(f"  - {why}")
-        remaining = len(gaps) - _MAX_GAPS
-        if remaining > 0:
-            lines.append(f"- _…and {remaining} more gap(s) in the full result._")
-    elif reasons:
-        # No enumerated gaps, but the verdict still has drivers worth showing.
-        for reason in reasons:
-            lines.append(f"- {reason}")
-    else:
-        lines.append("Nothing outstanding — every mapped test either passed or the affected behavior was fully accounted for.")
+    for obligation in actionable[:_MAX_BEFORE_MERGE]:
+        statement = _clean(_get(obligation, "statement", default=""), limit=140)
+        lines.append(f"- Verify: {statement}")
     lines.append("")
 
 
-def _render_review(result: dict[str, Any], lines: list[str]) -> None:
+# ---------------------------------------------------------------------------
+# Code review -- status/count only. Detailed findings are a different
+# product surface (inline comments / full result), never duplicated here.
+# ---------------------------------------------------------------------------
+
+
+def render_review(result: dict[str, Any], lines: list[str]) -> None:
     """`code_findings` being empty means something different depending on
-    `code_review_status` — the pass never ran, it ran and failed, or it ran
-    and genuinely found nothing — and only the status field can tell those
-    apart. Rendering "no findings" for a review that never actually
-    completed would be absence of evidence read as evidence of absence.
-
-    `code_review_status` predates this field in older result JSON (`None`
-    here). Without it, a non-empty `code_findings` can only ever mean the
-    pass completed, so that case still renders correctly; an empty list from
-    that era genuinely cannot be told apart from "never ran" or "failed", so
-    the section is omitted rather than guessing.
-    """
+    `code_review_status` -- the pass never ran, it ran and failed, or it
+    ran and genuinely found nothing -- and only the status field can tell
+    those apart. Rendering "no findings" for a review that never actually
+    completed would be absence of evidence read as evidence of absence."""
     status = _get(result, "code_review_status")
     findings = _as_list(_get(result, "code_findings", default=[]))
     if status is None:
@@ -291,201 +561,123 @@ def _render_review(result: dict[str, Any], lines: list[str]) -> None:
     if status == "not_requested":
         return
 
-    lines.append("### Review")
+    lines.append("### Code review")
     lines.append("")
 
     if status == "unavailable":
-        lines.append(
-            "Review unavailable — the code-review provider could not "
-            "complete the analysis. No review conclusion was produced."
-        )
+        lines.append("Code review unavailable — the provider could not complete the analysis.")
         lines.append("")
         return
 
     if not findings:
-        lines.append("Review completed — no findings.")
+        lines.append("No findings.")
         lines.append("")
         return
 
-    for finding in findings[:_MAX_FINDINGS]:
-        severity = str(_get(finding, "severity", default="P3"))
-        icon = _SEVERITY_ICONS.get(severity, "⚪")
-        title = _clean(_get(finding, "title", default="(untitled finding)"))
-        location = str(_get(finding, "file", default="") or "")
-        line_no = _get(finding, "line")
-        if location and isinstance(line_no, int):
-            location = f"{location}:{line_no}"
-        heading = f"- {icon} **[{severity}]** {title}"
-        if location:
-            heading += f" — `{location}`"
-        lines.append(heading)
-        for field in ("explanation", "impact", "suggested_fix"):
-            text = _clean(_get(finding, field, default=""))
-            if text:
-                lines.append(f"  - _{field.replace('_', ' ')}:_ {text}")
-    remaining = len(findings) - _MAX_FINDINGS
-    if remaining > 0:
-        lines.append(f"- _…and {remaining} more finding(s) in the full result._")
+    severities = [str(_get(f, "severity", default="P3")) for f in findings]
+    high = sum(1 for s in severities if s in ("P0", "P1"))
+    low = len(findings) - high
+    parts = []
+    if high:
+        parts.append(f"{high} higher-priority")
+    if low:
+        parts.append(f"{low} lower-priority")
+    lines.append(f"{len(findings)} finding(s) ({', '.join(parts)}) — see the full result for detail.")
     lines.append("")
 
 
-def _render_details(result: dict[str, Any], lines: list[str], run_url: str | None = None) -> None:
-    """Secondary context, collapsed so it never crowds the summary. This is
-    where the internal-metrics-shaped counts trimmed out of the top-level
-    Verification section live: file/symbol totals, the full obligation
-    status breakdown, and the complete proven/inferred impact list with
-    confidence and reasoning."""
+# ---------------------------------------------------------------------------
+# Optional, deliberately tiny technical-evidence block. NOT a second render
+# of the whole result -- see module docstring.
+# ---------------------------------------------------------------------------
+
+
+def render_details(result: dict[str, Any], lines: list[str]) -> None:
     body: list[str] = []
 
-    counts = _get(result, "summary", "counts", default={})
-    test_paths = _test_file_paths(result)
-    all_symbols = _as_list(_get(result, "change", "symbols", default=[]))
-    test_symbol_count = sum(
-        1 for item in all_symbols if str(_get(item, "file", default="")) in test_paths
-    )
-    production_symbol_count = len(all_symbols) - test_symbol_count
-
-    body.append("**Change metrics**")
-    body.append("")
-    body.append(
-        f"- Changed files: {counts.get('changed_files', 0)} "
-        f"({counts.get('changed_source_files', 0)} source, {counts.get('changed_test_files', 0)} test)"
-    )
-    total_symbols = counts.get("changed_symbols", len(all_symbols))
-    if all_symbols and total_symbols == len(all_symbols):
-        body.append(
-            f"- Changed symbols: {total_symbols} "
-            f"({production_symbol_count} production, {test_symbol_count} test)"
-        )
-    else:
-        body.append(f"- Changed symbols: {total_symbols}")
-    body.append(f"- Affected flows: {counts.get('affected_flows', 0)}")
-    obligations = counts.get("obligations", 0)
-    if obligations:
-        body.append(
-            f"- Verification obligations: {obligations} — "
-            f"{counts.get('obligations_passed', 0)} passed · "
-            f"{counts.get('obligations_failed', 0)} failed · "
-            f"{counts.get('obligations_unverified', 0)} unverified · "
-            f"{counts.get('obligations_unknown', 0)} unknown"
-        )
-    unresolved = counts.get("unresolved_changed_symbols", 0)
-    if unresolved:
-        body.append(f"- Unresolved: {unresolved} changed symbol(s) with no established impact path")
-    body.append("")
-
-    impacts = _as_list(_get(result, "accepted_impacts", default=[]))
-    if impacts:
-        body.append("**Proven / inferred impacts**")
-        body.append("")
-        for impact in impacts[:_MAX_IMPACTS]:
-            label = _clean(_get(impact, "behavior_label", default="")) or _clean(
-                _get(impact, "label", default="(unlabeled)")
-            )
-            status = str(_get(impact, "status", default="")).upper()
-            entry = f"- `{status}` {label}" if status else f"- {label}"
-            confidence = _get(impact, "llm_confidence")
-            if isinstance(confidence, (int, float)):
-                entry += f" _(confidence {float(confidence):.2f})_"
-            body.append(entry)
-            reason = _clean(_get(impact, "llm_reason", default=""))
-            if reason:
-                body.append(f"  - {reason}")
-        body.append("")
-
     symbols = _as_list(_get(result, "change", "symbols", default=[]))
-    if symbols:
-        body.append("**Changed symbols**")
-        body.append("")
-        for symbol in symbols[:_MAX_SYMBOLS]:
-            name = _get(symbol, "name", default="(unnamed)")
-            kind = _get(symbol, "kind", default="symbol")
-            path = _get(symbol, "file", default="")
-            start = _get(symbol, "start_line")
-            location = f"{path}:{start}" if path and isinstance(start, int) else str(path)
-            body.append(f"- `{name}` ({kind}) — `{location}`")
-        remaining = len(symbols) - _MAX_SYMBOLS
-        if remaining > 0:
-            body.append(f"- _…and {remaining} more symbol(s)._")
-        body.append("")
+    test_paths = _test_file_paths(result)
+    production_symbols = [
+        s for s in symbols if str(_get(s, "file", default="")) not in test_paths
+    ]
+    if production_symbols:
+        names = [str(_get(s, "name", default="")) for s in production_symbols[:_MAX_DETAIL_SYMBOLS] if _get(s, "name", default="")]
+        if names:
+            more = len(production_symbols) - len(names)
+            line = "**Changed symbols:** " + ", ".join(f"`{n}`" for n in names)
+            if more > 0:
+                line += f" (+{more} more)"
+            body.append(line)
 
-    notes = [_clean(item) for item in _as_list(_get(result, "analysis_notes", default=[]))]
-    if notes:
-        body.append("**Analysis completeness**")
-        body.append("")
-        for note in notes[:_MAX_NOTES]:
-            body.append(f"- {note}")
-        body.append("")
+    coverage_note = _pick_analysis_note(result, limit=200)
+    if coverage_note:
+        body.append(f"**Coverage limit:** {coverage_note}")
 
-    dependencies = _as_list(_get(result, "runtime_dependencies", default=[]))
-    if dependencies:
-        body.append("**Runtime requirements** (Sydes does not provision, mock, or contact these)")
-        body.append("")
-        for dependency in dependencies:
-            name = _get(dependency, "name", default="(unnamed)")
-            kind = _get(dependency, "kind", default="")
-            body.append(f"- {name}" + (f" (`{kind}`)" if kind else ""))
-        body.append("")
-
-    body.append("**Diagnostics**")
-    body.append("")
-    diag_line = "- CBM timings, graph-slice counts, and route-graph internals are in the run's uploaded artifact, not here"
-    if run_url:
-        diag_line += f" ([view run]({run_url}))"
-    body.append(diag_line)
-    body.append("")
+    deps = _as_list(_get(result, "runtime_dependencies", default=[]))
+    if deps:
+        name = _get(deps[0], "name", default="")
+        if name:
+            body.append(f"**Key dependency:** {name}")
 
     if not body:
         return
 
-    lines.append("<details><summary>Technical details</summary>")
+    lines.append("<details><summary>Technical evidence</summary>")
     lines.append("")
-    lines.extend(body)
+    for item in body:
+        lines.append(f"- {item}")
+    lines.append("")
     lines.append("</details>")
     lines.append("")
 
 
+# ---------------------------------------------------------------------------
+# Footer
+# ---------------------------------------------------------------------------
+
+
+def render_footer(lines: list[str], run_url: str | None) -> None:
+    lines.append("---")
+    footer = "Sydes"
+    if run_url:
+        footer += f" · [View full analysis]({run_url}) · [View run]({run_url})"
+    lines.append(footer)
+
+
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
+
+
 def render(result: dict[str, Any], run_url: str | None = None) -> str:
     lines: list[str] = [MARKER, ""]
-    _render_header(result, lines)
-    _render_change(result, lines)
-    _render_affected_behavior(result, lines)
-    _render_verification(result, lines)
-    _render_gaps(result, lines)
-    _render_review(result, lines)
-    _render_details(result, lines, run_url)
-
-    lines.append("---")
-    footer = "🔎 [Sydes](https://github.com/sydes-ai/sydes) · full JSON result in the run artifact"
-    if run_url:
-        footer += f" · [view run]({run_url})"
-    lines.append(footer)
+    render_header(result, lines)
+    render_change(result, lines)
+    render_system_impact(result, lines)
+    render_verification(result, lines)
+    render_before_merge(result, lines)
+    render_review(result, lines)
+    render_details(result, lines)
+    render_footer(lines, run_url)
     return "\n".join(lines).rstrip() + "\n"
 
 
 def render_unavailable(reason: str, run_url: str | None = None) -> str:
-    """Fallback body when there is no result to read — a failed or partial run
-    should still leave the reviewer with an explanation rather than silence."""
+    """Fallback body when there is no result to read — a failed or partial
+    run should still leave the reviewer with an explanation rather than
+    silence."""
     lines = [
         MARKER,
         "",
-        "## Sydes verification",
+        "## Sydes",
         "",
-        "| | |",
-        "| --- | --- |",
-        "| **Verdict** | ℹ️ `NOT PRODUCED` |",
-        "",
-        f"Sydes did not produce a result for this run: {reason}",
+        f"**No result produced** — {reason}",
         "",
         "This does not indicate a verdict about the change. See the run log for details.",
         "",
-        "---",
     ]
-    footer = "🔎 [Sydes](https://github.com/sydes-ai/sydes)"
-    if run_url:
-        footer += f" · [view run]({run_url})"
-    lines.append(footer)
-    return "\n".join(lines) + "\n"
+    render_footer(lines, run_url)
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def main() -> int:
