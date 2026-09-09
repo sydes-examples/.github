@@ -28,7 +28,7 @@ installed — zero infra reruns needed.
 |---|---|---|---|---|---|---|---|---|---|
 | PY-H-01 | Python | VERIFICATION INCOMPLETE | HIGH | 2 (+2 inferred) | 2 | 11 | yes | yes | **PASS** |
 | GO-H-01 | Go | VERIFICATION INCOMPLETE | MEDIUM | 0 (1 inferred) | 0 | 0 | unclear | no | **FAIL / unsupported** |
-| TS-H-01 | TypeScript | VERIFICATION INCOMPLETE | MEDIUM | 0 (3 inferred) | 0 | 0 | no | no | **FAIL / unsupported** |
+| TS-H-01 | TypeScript | VERIFICATION INCOMPLETE | MEDIUM | 0 (3 inferred) | 0 | 0 | yes (discovered 2026-09-09, see update note above) | no | **FAIL / unsupported** |
 | JAVA-H-01 | Java | VERIFICATION INCOMPLETE | MEDIUM | 2 | 1 | 1 | yes | yes | **PARTIAL** |
 | RS-H-01 | Rust | VERIFICATION INCOMPLETE | MEDIUM | 3 (self-referential) | 0 | 0 | no (0 test files found repo-wide) | no | **FAIL / unsupported** |
 
