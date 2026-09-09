@@ -34,7 +34,7 @@ on:
       sydes_ref:
         description: Git ref of sydes-ai/sydes to install (branch, tag, or SHA).
         type: string
-        default: "main"
+        default: "v0.2.0-beta.1"
       renderer_ref:
         description: Git ref of this repository to pull the renderer script from.
         type: string
