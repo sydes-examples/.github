@@ -37,6 +37,8 @@ _SEVERITY_ICONS = {"P0": "🔴", "P1": "🟠", "P2": "🟡", "P3": "⚪"}
 
 #: Keep the comment scannable; the full lists live in the JSON artifact.
 _MAX_BEHAVIOR_CHANGES = 5
+_MAX_TOP_BEHAVIOR_CHANGES = 2  # "What changed" is a glance, not the full list
+_MAX_AFFECTED_BEHAVIOR = 5
 _MAX_GAPS = 5
 _MAX_FINDINGS = 10
 _MAX_SYMBOLS = 15
@@ -115,75 +117,125 @@ def _render_change(result: dict[str, Any], lines: list[str]) -> None:
     if not summary and not behaviors:
         return
 
-    lines.append("### Change")
+    lines.append("### What changed")
     lines.append("")
     if summary:
         lines.append(summary)
         lines.append("")
-    for item in behaviors[:_MAX_BEHAVIOR_CHANGES]:
+    # Keep this section to a glance: 1-2 concrete bullets, not every behavior
+    # change the analysis produced. The full list still lives in the
+    # collapsed technical details below.
+    for item in behaviors[:_MAX_TOP_BEHAVIOR_CHANGES]:
         description = _clean(_get(item, "description", default=""))
         if not description:
             continue
-        confidence = _get(item, "confidence")
-        suffix = ""
-        if isinstance(confidence, (int, float)):
-            suffix = f" _(confidence {float(confidence):.2f})_"
-        lines.append(f"- {description}{suffix}")
-    remaining = len(behaviors) - _MAX_BEHAVIOR_CHANGES
-    if remaining > 0:
-        lines.append(f"- _…and {remaining} more behavior change(s) in the full result._")
+        lines.append(f"- {description}")
+    lines.append("")
+
+
+def _flow_path_label(flow: dict[str, Any], test_paths: set[str]) -> str:
+    """Build a route → handler → changed-symbol label for one affected flow,
+    the concrete, reviewer-legible form of "what this change reaches" —
+    e.g. `POST /pets` → `PetController.create` → `PetService.create`.
+
+    The changed symbol shown must be a PRODUCTION symbol, not a test: a
+    flow's `changed_nodes` mixes the production symbol(s) actually changed
+    with any newly-added/updated test functions, in diff order rather than
+    call-depth order -- showing a test function here would misrepresent
+    what the change actually reaches. When more than one production symbol
+    is present, the LAST one is shown: in practice this tends to be the
+    deeper, service-layer symbol (the one closest to "what the business
+    logic does") rather than a controller-level symbol already shown as
+    the handler above. If no production symbol exists beyond the handler
+    itself (the change lives entirely inside the handler function), the
+    path is left at route → handler with no third segment -- a shorter,
+    honest label beats padding it out with an unrelated test name."""
+    parts = [str(_get(flow, "entry_label", default="") or "").strip()]
+    handler = str(_get(flow, "handler", default="") or "").strip()
+    if handler and handler != parts[0]:
+        parts.append(handler)
+    changed = _as_list(_get(flow, "changed_nodes", default=[]))
+    production_symbol = ""
+    for node in changed:
+        symbol = str(_get(node, "symbol", default="") or "").strip()
+        if not symbol or symbol == handler:
+            continue
+        file_path = str(_get(node, "file", default="") or "")
+        if file_path not in test_paths:
+            production_symbol = symbol  # keep overwriting -- last one wins
+    if production_symbol:
+        parts.append(production_symbol)
+    return " → ".join(f"`{p}`" for p in parts if p)
+
+
+def _render_affected_behavior(result: dict[str, Any], lines: list[str]) -> None:
+    """The section a reviewer actually needs: concrete, labeled paths, not
+    aggregate counts. A flow only renders as a plain, unqualified path if
+    its matching `accepted_impacts` entry is actually `proven` -- a flow
+    can appear in `affected_flows` (a traced candidate graph) while its
+    impact classification is still `inferred`, and that distinction must
+    never be flattened away here. Impacts that never resolved to a
+    structural flow at all render as explicitly `(inferred)` too, so the
+    two kinds of evidence are never visually conflated."""
+    flows = _as_list(_get(result, "affected_flows", default=[]))
+    impacts = _as_list(_get(result, "accepted_impacts", default=[]))
+    impact_status_by_id = {str(_get(imp, "id", default="")): str(_get(imp, "status", default="")) for imp in impacts}
+    shown_impact_ids: set[str] = set()
+    test_paths = _test_file_paths(result)
+
+    lines.append("### Affected behavior")
+    lines.append("")
+
+    shown = 0
+    for flow in flows[:_MAX_AFFECTED_BEHAVIOR]:
+        label = _flow_path_label(flow, test_paths)
+        if not label:
+            continue
+        flow_id = str(_get(flow, "id", default=""))
+        shown_impact_ids.add(flow_id)
+        status = impact_status_by_id.get(flow_id, "proven")  # no matching impact => trust the flow itself
+        suffix = "" if status == "proven" else " _(inferred, not fully proven)_"
+        lines.append(f"- {label}{suffix}")
+        shown += 1
+
+    # Impacts the LLM accepted but that never became a structurally-traced
+    # flow are real signal too (that's the whole point of `inferred`) --
+    # show them, clearly marked, rather than silently dropping them here
+    # and only surfacing them in the collapsed details.
+    inferred_only = [
+        imp
+        for imp in impacts
+        if str(_get(imp, "id", default="")) not in shown_impact_ids
+        and str(_get(imp, "status", default="")) == "inferred"
+    ]
+    for impact in inferred_only[: max(0, _MAX_AFFECTED_BEHAVIOR - shown)]:
+        label = _clean(_get(impact, "behavior_label", default="")) or _clean(
+            _get(impact, "label", default="")
+        )
+        if label:
+            lines.append(f"- `{label}` _(inferred, not structurally traced)_")
+            shown += 1
+
+    if shown == 0:
+        lines.append("- No affected behavior could be structurally traced or inferred for this change.")
     lines.append("")
 
 
 def _render_verification(result: dict[str, Any], lines: list[str]) -> None:
+    """Only the three facts a reviewer needs about test coverage. Everything
+    else Sydes tracks (file/symbol counts, obligation-status breakdowns,
+    the production/test split) is real signal but internal-metrics-shaped —
+    it lives in the collapsed technical details, not here."""
     counts = _get(result, "summary", "counts", default={})
-    test_paths = _test_file_paths(result)
-    symbols = _as_list(_get(result, "change", "symbols", default=[]))
-    test_symbols = sum(1 for item in symbols if str(_get(item, "file", default="")) in test_paths)
-    production_symbols = len(symbols) - test_symbols
 
     lines.append("### Verification")
     lines.append("")
-    lines.append(
-        f"- **Changed files:** {counts.get('changed_files', 0)} "
-        f"({counts.get('changed_source_files', 0)} source, {counts.get('changed_test_files', 0)} test)"
-    )
-    # Only show the production/test split when it actually adds up to the
-    # reported total, so the line can never render inconsistent arithmetic.
-    total_symbols = counts.get("changed_symbols", len(symbols))
-    if symbols and total_symbols == len(symbols):
-        lines.append(
-            f"- **Changed symbols:** {total_symbols} "
-            f"({production_symbols} production, {test_symbols} test)"
-        )
-    else:
-        lines.append(f"- **Changed symbols:** {total_symbols}")
-    lines.append(
-        f"- **Affected behavior:** {counts.get('impacts_proven', 0)} proven · "
-        f"{counts.get('impacts_inferred', 0)} inferred"
-    )
-    lines.append(f"- **Affected flows:** {counts.get('affected_flows', 0)}")
-
+    lines.append(f"- {counts.get('mapped_tests', 0)} relevant test(s) found")
     obligations = counts.get("obligations", 0)
-    obligation_line = f"- **Verification obligations:** {obligations}"
     if obligations:
-        obligation_line += (
-            f" — {counts.get('obligations_passed', 0)} passed · "
-            f"{counts.get('obligations_failed', 0)} failed · "
-            f"{counts.get('obligations_unverified', 0)} unverified · "
-            f"{counts.get('obligations_unknown', 0)} unknown"
-        )
-    lines.append(obligation_line)
-    lines.append(
-        f"- **Tests:** {counts.get('mapped_tests', 0)} mapped · "
-        f"{counts.get('tests_executed', 0)} executed by Sydes"
-    )
-
-    unresolved = counts.get("unresolved_changed_symbols", 0)
-    if unresolved:
-        lines.append(
-            f"- **Unresolved:** {unresolved} changed symbol(s) with no established impact path"
-        )
+        directly_covering = counts.get("obligations_passed", 0) + counts.get("obligations_failed", 0)
+        lines.append(f"- {directly_covering} test(s) directly cover this change")
+    lines.append(f"- {counts.get('tests_executed', 0)} test(s) executed by Sydes")
     lines.append("")
 
 
@@ -191,7 +243,7 @@ def _render_gaps(result: dict[str, Any], lines: list[str]) -> None:
     gaps = _as_list(_get(result, "verification_gaps", default=[]))
     reasons = [_clean(item) for item in _as_list(_get(result, "summary", "risk_reasons", default=[]))]
 
-    lines.append("### Gaps")
+    lines.append("### What remains unverified")
     lines.append("")
     if gaps:
         for gap in gaps[:_MAX_GAPS]:
@@ -212,7 +264,7 @@ def _render_gaps(result: dict[str, Any], lines: list[str]) -> None:
         for reason in reasons:
             lines.append(f"- {reason}")
     else:
-        lines.append("No verification gaps were recorded.")
+        lines.append("Nothing outstanding — every mapped test either passed or the affected behavior was fully accounted for.")
     lines.append("")
 
 
@@ -277,13 +329,54 @@ def _render_review(result: dict[str, Any], lines: list[str]) -> None:
     lines.append("")
 
 
-def _render_details(result: dict[str, Any], lines: list[str]) -> None:
-    """Secondary context, collapsed so it never crowds the summary."""
+def _render_details(result: dict[str, Any], lines: list[str], run_url: str | None = None) -> None:
+    """Secondary context, collapsed so it never crowds the summary. This is
+    where the internal-metrics-shaped counts trimmed out of the top-level
+    Verification section live: file/symbol totals, the full obligation
+    status breakdown, and the complete proven/inferred impact list with
+    confidence and reasoning."""
     body: list[str] = []
+
+    counts = _get(result, "summary", "counts", default={})
+    test_paths = _test_file_paths(result)
+    all_symbols = _as_list(_get(result, "change", "symbols", default=[]))
+    test_symbol_count = sum(
+        1 for item in all_symbols if str(_get(item, "file", default="")) in test_paths
+    )
+    production_symbol_count = len(all_symbols) - test_symbol_count
+
+    body.append("**Change metrics**")
+    body.append("")
+    body.append(
+        f"- Changed files: {counts.get('changed_files', 0)} "
+        f"({counts.get('changed_source_files', 0)} source, {counts.get('changed_test_files', 0)} test)"
+    )
+    total_symbols = counts.get("changed_symbols", len(all_symbols))
+    if all_symbols and total_symbols == len(all_symbols):
+        body.append(
+            f"- Changed symbols: {total_symbols} "
+            f"({production_symbol_count} production, {test_symbol_count} test)"
+        )
+    else:
+        body.append(f"- Changed symbols: {total_symbols}")
+    body.append(f"- Affected flows: {counts.get('affected_flows', 0)}")
+    obligations = counts.get("obligations", 0)
+    if obligations:
+        body.append(
+            f"- Verification obligations: {obligations} — "
+            f"{counts.get('obligations_passed', 0)} passed · "
+            f"{counts.get('obligations_failed', 0)} failed · "
+            f"{counts.get('obligations_unverified', 0)} unverified · "
+            f"{counts.get('obligations_unknown', 0)} unknown"
+        )
+    unresolved = counts.get("unresolved_changed_symbols", 0)
+    if unresolved:
+        body.append(f"- Unresolved: {unresolved} changed symbol(s) with no established impact path")
+    body.append("")
 
     impacts = _as_list(_get(result, "accepted_impacts", default=[]))
     if impacts:
-        body.append("**Affected behavior**")
+        body.append("**Proven / inferred impacts**")
         body.append("")
         for impact in impacts[:_MAX_IMPACTS]:
             label = _clean(_get(impact, "behavior_label", default="")) or _clean(
@@ -334,10 +427,18 @@ def _render_details(result: dict[str, Any], lines: list[str]) -> None:
             body.append(f"- {name}" + (f" (`{kind}`)" if kind else ""))
         body.append("")
 
+    body.append("**Diagnostics**")
+    body.append("")
+    diag_line = "- CBM timings, graph-slice counts, and route-graph internals are in the run's uploaded artifact, not here"
+    if run_url:
+        diag_line += f" ([view run]({run_url}))"
+    body.append(diag_line)
+    body.append("")
+
     if not body:
         return
 
-    lines.append("<details><summary>More details</summary>")
+    lines.append("<details><summary>Technical details</summary>")
     lines.append("")
     lines.extend(body)
     lines.append("</details>")
@@ -348,10 +449,11 @@ def render(result: dict[str, Any], run_url: str | None = None) -> str:
     lines: list[str] = [MARKER, ""]
     _render_header(result, lines)
     _render_change(result, lines)
+    _render_affected_behavior(result, lines)
     _render_verification(result, lines)
     _render_gaps(result, lines)
     _render_review(result, lines)
-    _render_details(result, lines)
+    _render_details(result, lines, run_url)
 
     lines.append("---")
     footer = "🔎 [Sydes](https://github.com/sydes-ai/sydes) · full JSON result in the run artifact"
