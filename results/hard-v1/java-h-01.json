@@ -1,0 +1,54 @@
+{
+  "case_id": "JAVA-H-01",
+  "language": "java",
+  "repo": "sydes-examples/spring-boot-demo",
+  "pr_url": "https://github.com/sydes-examples/spring-boot-demo/pull/3",
+  "base_sha": "dc5da86ac15d96fa5ae9bb05c02da95577ae54e3",
+  "head_sha": "9ddef151da87d96e23b5a8c407c50c241945b98a",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/spring-boot-demo/actions/runs/34293374711",
+  "run_id": "34293374711",
+  "timestamp": "2026-09-09T00:04:00Z",
+  "support_status": "PARTIAL",
+  "expected_path": "JwtAuthenticationFilter.doFilterInternal -> JwtUtil.parseJWT [new grace window] -> CustomUserDetailsService -> RbacAuthorityService (cross-cutting, all authenticated routes)",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "changed_symbols_count": 6,
+    "known_entrypoints": 522,
+    "http_entrypoints": 1,
+    "deterministic_routes_found": 61,
+    "deterministic_frameworks": "express_mount_graph,spring",
+    "accepted_impacts_count": 2,
+    "impacts_proven": 2,
+    "impacts_inferred": 0,
+    "accepted_impacts_detail": [
+      {"label": "doFilterInternal", "status": "proven", "changed_symbols": ["parseJWT"]},
+      {"label": "POST /api/auth/logout", "status": "proven", "changed_symbols": ["parseJWT"]}
+    ],
+    "unresolved_changed_symbols": 0,
+    "affected_flows_count": 1,
+    "affected_flow_changed_nodes": [
+      "demo-rbac-security/.../util/JwtUtil.java:JwtUtil.parseJWT",
+      "demo-rbac-security/.../test/.../JwtUtilTest.java:JwtUtilTest.setUp",
+      "demo-rbac-security/.../test/.../JwtUtilTest.java:JwtUtilTest.buildJwt",
+      "demo-rbac-security/.../test/.../JwtUtilTest.java:JwtUtilTest.parseJWT_currentTokenMatchesRedis_succeeds",
+      "demo-rbac-security/.../test/.../JwtUtilTest.java:JwtUtilTest.parseJWT_previousTokenMatchesWithinGraceWindow_succeeds",
+      "demo-rbac-security/.../test/.../JwtUtilTest.java:JwtUtilTest.parseJWT_tokenMatchesNeitherCurrentNorPrevious_throwsTokenOutOfCtrl"
+    ],
+    "obligations_count": 1,
+    "test_files_found": 93,
+    "test_cases_found": 152,
+    "test_frameworks_detected": "none"
+  },
+  "ground_truth_test": {
+    "name": "JwtUtilTest (all 3 methods)",
+    "discovered": true,
+    "mapped_or_selected": true
+  },
+  "caveats": [
+    "A real, structurally proven flow WAS found: POST /api/auth/logout, whose handler genuinely calls JwtUtil.parseJWT to identify the session before invalidating it (a real, correct discovery, not a false positive). The new JwtUtilTest was correctly mapped to this flow.",
+    "HOWEVER this is only a PARTIAL result relative to the preregistered ground truth: the true blast radius of this change is EVERY authenticated route in the module (via the shared servlet filter), not just logout. Sydes' route/entrypoint model represents routes individually and has no mechanism to say 'this filter-level change affects a whole class of endpoints' -- it found exactly one concrete route that happens to have a genuine direct dependency, not the cross-cutting breadth itself.",
+    "This is a meaningfully different, narrower kind of result than a clean PASS -- recorded honestly as PARTIAL rather than rounded up to PASS."
+  ]
+}

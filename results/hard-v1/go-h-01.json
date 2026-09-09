@@ -1,0 +1,46 @@
+{
+  "case_id": "GO-H-01",
+  "language": "go",
+  "repo": "sydes-examples/simplebank",
+  "pr_url": "https://github.com/sydes-examples/simplebank/pull/3",
+  "base_sha": "67ccf46a9bb3366ab95c1ebf07b8f02f93b3b563",
+  "head_sha": "fc5837b81ff0adaa2118b2294b47258d336ef0bc",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/simplebank/actions/runs/34293367973",
+  "run_id": "34293367973",
+  "timestamp": "2026-09-09T00:03:54Z",
+  "support_status": "FAIL / unsupported (structural)",
+  "expected_path": "asynq task consumer (non-HTTP entrypoint) -> ProcessTaskSendVerifyEmail -> store.GetUser -> [skip if verified] -> CreateVerifyEmail -> SendEmail",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "changed_symbols_count": 6,
+    "known_entrypoints": 7,
+    "http_entrypoints": 0,
+    "deterministic_routes_found": 7,
+    "deterministic_frameworks": "express,express_mount_graph",
+    "accepted_impacts_count": 1,
+    "impacts_proven": 0,
+    "impacts_inferred": 1,
+    "accepted_impacts_detail": [
+      {"label": "email verification task processing for users", "status": "inferred", "llm_confidence": 0.85, "corroborated": false}
+    ],
+    "unresolved_changed_symbols": 6,
+    "affected_flows_count": 0,
+    "obligations_count": 0,
+    "test_files_found": 19,
+    "test_cases_found": 41,
+    "test_frameworks_detected": "go_test"
+  },
+  "ground_truth_test": {
+    "name": "TestProcessTaskSendVerifyEmail/AlreadyVerified",
+    "discovered": "unknown -- test_files_found increased by 1 vs GO-M-01's 18, consistent with the new test file being seen, but it was never connected to any flow",
+    "mapped_or_selected": false
+  },
+  "caveats": [
+    "CONFIRMED, PREDICTED FINDING: affected_flows=0 and ALL 6 changed symbols unresolved. Sydes' entrypoint model has NO representation for a non-HTTP, asynq task-queue consumer -- known_entrypoints=7 and deterministic_routes_found=7 confirm Sydes DOES detect the repo's normal gRPC/HTTP routes generically, it simply has no concept of a task-type-string-dispatched consumer as an entrypoint at all.",
+    "The one accepted impact is a pure LLM semantic guess (0.85 confidence, NOT corroborated, verification_model_status=unsupported_or_partial) -- it correctly identified the thematic area (email verification task processing) but could not be promoted to a structural flow or obligation.",
+    "This directly and cleanly extends GO-M-01's finding: GO-M-01 (producer side, AfterCreate) could reach 'inferred' impact status because it started FROM a real HTTP entrypoint (POST /users) and only lost the trail at the async boundary. GO-H-01 starts entirely on the FAR side of that boundary (a pure consumer, no HTTP path at all) and gets NOTHING -- not even an inferred connection to a route, since there is no route to connect to.",
+    "This is recorded as a genuine architectural-capability gap, per instructions -- NOT fixed."
+  ]
+}

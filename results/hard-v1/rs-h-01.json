@@ -1,0 +1,49 @@
+{
+  "case_id": "RS-H-01",
+  "language": "rust",
+  "repo": "sydes-examples/realworld-axum-sqlx",
+  "pr_url": "https://github.com/sydes-examples/realworld-axum-sqlx/pull/1",
+  "base_sha_preregistered": "f1b25654773228297e35c292f357d33b7121a101",
+  "base_sha_actual_pr_base": "21d806098c59a364609b08c02f61ea3c0638ade2",
+  "head_sha": "9ef5720a2c8b5128b024bb7095bd53d628fe4153",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/realworld-axum-sqlx/actions/runs/34293378046",
+  "run_id": "34293378046",
+  "timestamp": "2026-09-09T00:04:04Z",
+  "support_status": "FAIL / unsupported (structural)",
+  "expected_path": "AuthUser::from_authorization [new grace period] -- consumed by 5+ handler files across the whole API",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "changed_symbols_count": 6,
+    "known_entrypoints": 5,
+    "http_entrypoints": 0,
+    "deterministic_routes_found": 0,
+    "deterministic_frameworks": "none",
+    "accepted_impacts_count": 3,
+    "impacts_proven": 3,
+    "impacts_inferred": 0,
+    "accepted_impacts_detail": [
+      {"label": "token_well_past_grace_period_is_rejected", "status": "proven", "kind": "decorated"},
+      {"label": "token_with_future_exp_is_accepted", "status": "proven", "kind": "decorated"},
+      {"label": "token_within_grace_period_after_exp_is_accepted", "status": "proven", "kind": "decorated"}
+    ],
+    "unresolved_changed_symbols": 0,
+    "affected_flows_count": 0,
+    "obligations_count": 0,
+    "test_files_found": 0,
+    "test_cases_found": 0,
+    "test_frameworks_detected": "none"
+  },
+  "ground_truth_test": {
+    "name": "token_within_grace_period_after_exp_is_accepted",
+    "discovered": "the test SYMBOL was seen and self-referentially marked proven, but test_files_found=0/test_cases_found=0 in diagnostics -- the repo-wide test-discovery scan found NOTHING, including the new test itself",
+    "mapped_or_selected": false
+  },
+  "caveats": [
+    "STRONGEST negative Rust finding of this study so far: deterministic_routes_found=0, deterministic_frameworks=none -- NOT EVEN the express_mount_graph false-positive heuristic that fired (incorrectly) for Rocket in RS-M-01 activated here. Sydes' route detection appears to have NO detector at all for Axum's `.route(path, get(handler))`-style registration, a completely different pattern from Rocket's attribute macros. This is a distinct, additional confirmation -- beyond RS-M-01's finding -- that Rust route detection is fundamentally weak across MULTIPLE Rust web frameworks, not a Rocket-specific quirk.",
+    "The three 'proven' accepted_impacts are NOT real production routes -- their `kind` is 'decorated' and their labels are literally the three new test function names, each self-referentially listing itself plus from_authorization/test_ctx/auth_header_with_exp as 'changed_symbols'. This reflects Sydes correctly noticing the new test symbols reference the changed function, not a genuine route-level structural proof. Recorded honestly rather than counted as a real pass.",
+    "affected_flows=0 and http_entrypoints=0 confirm no HTTP-route-level connection was established at all, despite AuthUser::from_authorization genuinely being consumed by 5+ handler files across the entire API.",
+    "This is recorded as a genuine, further architectural-capability gap for Rust, consistent with (and reinforcing) the overall PARTIAL Rust support status for this study -- NOT fixed, per instructions."
+  ]
+}

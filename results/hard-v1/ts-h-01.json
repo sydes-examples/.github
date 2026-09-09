@@ -1,0 +1,48 @@
+{
+  "case_id": "TS-H-01",
+  "language": "typescript",
+  "repo": "sydes-examples/domain-driven-hexagon",
+  "pr_url": "https://github.com/sydes-examples/domain-driven-hexagon/pull/3",
+  "base_sha": "42b46d04687ae9bd640622099b719402f364dc77",
+  "head_sha": "6682648145c837ba6267e23826577f0563e2d469",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/domain-driven-hexagon/actions/runs/34293371037",
+  "run_id": "34293371037",
+  "timestamp": "2026-09-09T00:03:57Z",
+  "support_status": "FAIL / unsupported (structural)",
+  "expected_path": "POST /v1/users -> CommandBus -> CreateUserService.execute -> new Address(...) -> Address.validate() [new rule] -> UserEntity.create",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "MEDIUM",
+    "changed_symbols_count": 1,
+    "known_entrypoints": 8,
+    "http_entrypoints": 0,
+    "deterministic_routes_found": 3,
+    "deterministic_frameworks": "express_mount_graph,ts_decorators",
+    "accepted_impacts_count": 3,
+    "impacts_proven": 0,
+    "impacts_inferred": 3,
+    "accepted_impacts_detail": [
+      {"label": "User creation flow rejecting invalid US postal codes", "status": "inferred", "llm_confidence": 0.85, "corroborated": true, "changed_symbols": ["(whole change)"]},
+      {"label": "Search/filter operations on users with postal codes", "status": "inferred", "llm_confidence": 0.6, "corroborated": false},
+      {"label": "User creation flow involving address data", "status": "inferred", "llm_confidence": 0.9, "corroborated": false, "changed_symbols": ["validate"]}
+    ],
+    "unresolved_changed_symbols": 1,
+    "affected_flows_count": 0,
+    "obligations_count": 0,
+    "test_files_found": 10,
+    "test_cases_found": 12,
+    "test_frameworks_detected": "jest"
+  },
+  "ground_truth_test": {
+    "name": "delete-user.feature: postal code scenario (new)",
+    "discovered": false,
+    "mapped_or_selected": false
+  },
+  "caveats": [
+    "CONFIRMED FINDING: affected_flows=0, the single changed symbol (Address.validate) never resolved to any HTTP flow. Unlike TS-M-01 (which traced FORWARD from a controller down through a CommandBus dispatch to a handler and proved it), this case required tracing BACKWARD/upward from a value object several layers below the command handler, through entity construction, back through the CQRS dispatch, to the controller -- and that direction of reachability was not achieved structurally.",
+    "GENUINELY INTERESTING side-finding: one LLM-inferred impact (0.85 confidence, corroborated=true) references 'CreateUserCliController.createUser' -- suggesting this repo has a PARALLEL CLI interface (in addition to the HTTP interface) that also constructs Address objects. This was not anticipated in the preregistration and is worth noting as a real, if uncorroborated-by-structure, discovery.",
+    "A second LLM guess ('Search/filter operations on users with postal codes', confidence 0.6, uncorroborated) appears more speculative and less clearly connected to the actual change -- included for full honesty, not filtered out.",
+    "Recorded as a genuine limit on Sydes' reverse-reachability analysis for deeply-nested value objects in a CQRS+DDD architecture -- NOT fixed, per instructions."
+  ]
+}

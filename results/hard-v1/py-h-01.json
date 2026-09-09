@@ -1,0 +1,51 @@
+{
+  "case_id": "PY-H-01",
+  "language": "python",
+  "repo": "sydes-examples/Kokoro-FastAPI",
+  "pr_url": "https://github.com/sydes-examples/Kokoro-FastAPI/pull/4",
+  "base_sha": "5152e8b6e29bd8f1ddd68c62a1a2471b5b34fd44",
+  "head_sha": "9c7819c6806c6c0d2b1bdbcb72e08ac91d961b22",
+  "sydes_sha": "256f4f9e5e09956d6014bf450f4462f616e826ce",
+  "run_url": "https://github.com/sydes-examples/Kokoro-FastAPI/actions/runs/34293364562",
+  "run_id": "34293364562",
+  "timestamp": "2026-09-09T00:03:52Z",
+  "support_status": "PASS",
+  "expected_path": "POST /v1/audio/speech, POST /dev/captioned_speech -> ssml.py -> split_by_voice (text_processor.py) -> tts_service.py",
+  "result_metrics": {
+    "verdict": "VERIFICATION INCOMPLETE",
+    "risk": "HIGH",
+    "changed_symbols_count": 4,
+    "known_entrypoints": 173,
+    "http_entrypoints": 2,
+    "deterministic_routes_found": 22,
+    "deterministic_frameworks": "express_mount_graph",
+    "accepted_impacts_count": 4,
+    "impacts_proven": 2,
+    "impacts_inferred": 2,
+    "accepted_impacts_detail": [
+      {"label": "POST /audio/speech", "status": "proven"},
+      {"label": "POST /dev/captioned_speech", "status": "proven"},
+      {"label": "Speech synthesis prosody behavior with voice tag changes", "status": "inferred"},
+      {"label": "Automated text-to-speech rendering with voice transitions", "status": "inferred"}
+    ],
+    "unresolved_changed_symbols": 1,
+    "affected_flows_count": 2,
+    "obligations_count": 11,
+    "obligations_unverified": 7,
+    "obligations_unknown": 4,
+    "test_files_found": 37,
+    "test_cases_found": 294,
+    "test_frameworks_detected": "pytest",
+    "mapped_tests_count": 20,
+    "supporting_tests_count": 285
+  },
+  "ground_truth_test": {
+    "name": "test_baserate_persists_across_voice_change",
+    "discovered": true,
+    "mapped_or_selected": true
+  },
+  "caveats": [
+    "Both real routes proven cleanly, matching the deep 5-file SSML->text_processor->tts_service chain exactly as preregistered.",
+    "risk=HIGH here reflects 0/11 obligations passed with 0 test executions -- consistent with every case in this study (Sydes never executes test suites itself); not a sign of a worse structural result."
+  ]
+}
