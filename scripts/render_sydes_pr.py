@@ -410,65 +410,101 @@ def summarize_system_impact_areas(result: dict[str, Any]) -> list[tuple[str, str
     return rows
 
 
-def _flow_path_label(flow: dict[str, Any], test_paths: set[str]) -> str:
-    """Build a route -> handler -> changed-symbol label for one affected
-    flow -- the concrete, reviewer-legible form of "what this change
-    reaches", e.g. `POST /pets` -> `PetController.create` -> `PetService.create`.
+#: Cap on distinct changed-target terminals shown per established flow (see
+#: `_flow_changed_terminals`) -- keeps a flow that touches many files from
+#: turning one route's box into a symbol dump, while still surfacing more
+#: than one genuinely distinct established behavior instead of silently
+#: collapsing to an arbitrary single pick.
+_MAX_FLOW_TERMINALS = 3
 
-    The changed symbol shown must be a PRODUCTION symbol, not a test: a
-    flow's `changed_nodes` mixes the production symbol(s) actually changed
-    with any newly-added/updated test functions, in diff order rather than
-    call-depth order. When more than one production symbol is present, the
-    LAST one is shown -- in practice the deeper, service-layer symbol
-    rather than a controller-level symbol already shown as the handler. If
-    no production symbol exists beyond the handler itself, the path is
-    left at route -> handler with no third segment."""
-    parts = [str(_get(flow, "entry_label", default="") or "").strip()]
-    handler = str(_get(flow, "handler", default="") or "").strip()
-    if handler and handler != parts[0]:
-        parts.append(handler)
+
+def _flow_changed_terminals(flow: dict[str, Any], test_paths: set[str], handler: str) -> list[str]:
+    """The changed PRODUCTION symbol(s) this flow's evidence actually
+    reaches, one per distinct file among `changed_nodes`.
+
+    A flow's `changed_nodes` mixes every production symbol touched with any
+    newly-added/updated test functions, in diff/graph order rather than
+    call-depth order -- test symbols are dropped via `test_paths`, same as
+    before. Multiple changed symbols in the SAME file are, in practice,
+    almost always part of one underlying edit (a helper extracted from, or
+    called by, the symbol next to it) -- so at most one representative
+    symbol is kept per file (the last one encountered), which naturally
+    collapses that case to a single terminal without needing to understand
+    the edit semantically. Symbols in DIFFERENT files are genuinely
+    separate changed locations and are never merged: this is what lets a
+    flow that reaches two unrelated fixes (e.g. a normalizer fix and an
+    unrelated voice-loading fix) show both instead of silently keeping only
+    one. Order of the returned list follows first-appearance order of each
+    file in `changed_nodes`; the caller caps how many are actually shown."""
     changed = _as_list(_get(flow, "changed_nodes", default=[]))
-    production_symbol = ""
+    symbol_by_file: dict[str, str] = {}
+    file_order: list[str] = []
     for node in changed:
         symbol = str(_get(node, "symbol", default="") or "").strip()
         if not symbol or symbol == handler:
             continue
         file_path = str(_get(node, "file", default="") or "")
-        if file_path not in test_paths:
-            production_symbol = symbol  # keep overwriting -- last one wins
-    if production_symbol:
-        parts.append(production_symbol)
-    return parts
+        if file_path in test_paths:
+            continue
+        if file_path not in symbol_by_file:
+            file_order.append(file_path)
+        symbol_by_file[file_path] = symbol  # keep overwriting -- last one in this file wins
+    return [symbol_by_file[f] for f in file_order]
+
+
+def _flow_path_label(flow: dict[str, Any], test_paths: set[str]) -> tuple[list[str], int]:
+    """Build a route -> handler -> changed-target(s) label for one affected
+    flow -- the concrete, reviewer-legible form of "what this change
+    reaches", e.g. `POST /pets` -> `PetController.create` -> `PetService.create`.
+
+    Returns (parts, omitted_terminal_count). `parts` holds the route and
+    handler followed by up to `_MAX_FLOW_TERMINALS` changed-target
+    terminals (see `_flow_changed_terminals`) -- almost always one, but
+    more than one when this flow's own evidence genuinely reaches changed
+    symbols in more than one file. If no production symbol exists beyond
+    the handler itself, the path is left at route -> handler with no
+    further segment."""
+    parts = [str(_get(flow, "entry_label", default="") or "").strip()]
+    handler = str(_get(flow, "handler", default="") or "").strip()
+    if handler and handler != parts[0]:
+        parts.append(handler)
+    terminals = _flow_changed_terminals(flow, test_paths, handler)
+    parts.extend(terminals[:_MAX_FLOW_TERMINALS])
+    return parts, max(0, len(terminals) - _MAX_FLOW_TERMINALS)
 
 
 def select_representative_paths(
     result: dict[str, Any],
-) -> tuple[list[list[str]], list[str], int, int]:
+) -> tuple[list[tuple[list[str], int]], list[str], int, int]:
     """Deterministic representative-path selection -- the rule that keeps a
     20-route change from dumping 20 paths into the comment.
 
     Returns (established_paths, likely_labels, established_remaining,
-    likely_remaining). `established_paths` are route->handler->symbol part
-    lists (for the fenced/tree rendering); `likely_labels` are plain
-    strings (inferred impacts rarely have a full traced chain to show)."""
+    likely_remaining). `established_paths` are (parts, omitted_terminal_count)
+    pairs -- `parts` is a route->handler->target(s) list for the
+    fenced/tree rendering, `omitted_terminal_count` is how many further
+    distinct changed-target terminals this same flow had beyond what
+    `_flow_path_label` already kept (see `_MAX_FLOW_TERMINALS`).
+    `likely_labels` are plain strings (inferred impacts rarely have a full
+    traced chain to show)."""
     flows = _as_list(_get(result, "affected_flows", default=[]))
     impacts = _as_list(_get(result, "accepted_impacts", default=[]))
     impact_status_by_id = _impact_status_by_id(result)
     test_paths = _test_file_paths(result)
 
-    established_all: list[list[str]] = []
+    established_all: list[tuple[list[str], int]] = []
     likely_all: list[str] = []
     shown_impact_ids: set[str] = set()
 
     for flow in flows:
-        parts = _flow_path_label(flow, test_paths)
+        parts, omitted = _flow_path_label(flow, test_paths)
         if not parts or not parts[0]:
             continue
         flow_id = str(_get(flow, "id", default=""))
         shown_impact_ids.add(flow_id)
         status = impact_status_by_id.get(flow_id, "proven")
         if status == "proven":
-            established_all.append(parts)
+            established_all.append((parts, omitted))
         else:
             likely_all.append(" → ".join(parts))
 
@@ -526,12 +562,14 @@ def render_system_impact(result: dict[str, Any], lines: list[str]) -> None:
     if established:
         lines.append("**Established**")
         lines.append("")
-        for idx, parts in enumerate(established):
+        for idx, (parts, omitted_terminals) in enumerate(established):
             if len(parts) > 1:
                 lines.append("```text")
                 lines.append(parts[0])
                 for p in parts[1:]:
                     lines.append(f"  → {p}")
+                if omitted_terminals:
+                    lines.append(f"  … +{omitted_terminals} more changed target(s)")
                 lines.append("```")
                 if idx < len(established) - 1:
                     lines.append("")  # blank line between fences -- otherwise
@@ -778,7 +816,15 @@ def render_details(result: dict[str, Any], lines: list[str]) -> None:
 
     coverage_note = _pick_analysis_note(result, limit=200)
     if coverage_note:
-        body.append(f"**Coverage limit:** {coverage_note}")
+        # A coverage-limit note is a global, repository-wide caveat (e.g.
+        # "route composition is unresolved ... some routes may be
+        # missing"), never a claim about the specific path(s) just shown
+        # above -- when one was established, label it as scoped to the
+        # REST of the repository so it cannot read as "the path shown here
+        # is itself unresolved".
+        established_routes, _likely_routes = _flow_routes_by_status(result, _impact_status_by_id(result))
+        label = "Other coverage limits" if established_routes else "Coverage limit"
+        body.append(f"**{label}:** {coverage_note}")
 
     # Same "tied to the change, not just present in the repo" bar as the
     # top-level Infrastructure row (see `_infrastructure_row`) -- a
@@ -808,10 +854,14 @@ def render_details(result: dict[str, Any], lines: list[str]) -> None:
 
 
 def render_footer(lines: list[str], run_url: str | None) -> None:
+    """One link, not two: until a distinct full-analysis viewer exists
+    (there is no dashboard yet), the run URL is the only place to look --
+    a second, identically-targeted "View full analysis" link next to
+    "View run" would just be the same link twice."""
     lines.append("---")
     footer = "Sydes"
     if run_url:
-        footer += f" · [View full analysis]({run_url}) · [View run]({run_url})"
+        footer += f" · [View run]({run_url})"
     lines.append(footer)
 
 

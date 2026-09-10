@@ -542,6 +542,135 @@ def test_before_merge_omitted_when_no_impact_was_found_at_all():
     assert "### Before merge" not in out
 
 
+# ---------------------------------------------------------------------------
+# Multiple established changed targets on one flow (regression: a flow that
+# reaches genuinely separate changed files -- e.g. a normalizer fix and an
+# unrelated voice-loading fix -- must show both, not silently collapse to
+# one arbitrary pick). Shape matches the real PR that surfaced this:
+# sydes-examples/Kokoro-FastAPI#7.
+# ---------------------------------------------------------------------------
+
+
+def _flow_with_nodes(flow_id: str, entry_label: str, handler: str, nodes: list[tuple[str, str]]) -> dict:
+    """`nodes` is a list of (file, symbol) pairs, in the order they'd appear
+    in `changed_nodes` -- lets a test build a flow whose changed_nodes span
+    more than one file (or include test-file entries), unlike `_make_flow`
+    which only ever attaches a single symbol."""
+    return {
+        "id": flow_id,
+        "entry_kind": "route",
+        "entry_label": entry_label,
+        "handler": handler,
+        "changed_nodes": [{"repo": "app", "file": f, "symbol": s} for f, s in nodes],
+        "obligations": [],
+    }
+
+
+def test_established_flow_reaching_two_files_shows_both_terminals():
+    result = _base_result(
+        affected_flows=[
+            _flow_with_nodes(
+                "flow:POST:/audio/speech",
+                "POST /audio/speech",
+                "create_speech",
+                [
+                    ("api/src/inference/voice_manager.py", "VoiceManager.load_voice"),
+                    ("api/src/routers/openai_compatible.py", "create_speech"),
+                    ("api/src/services/text_processing/normalizer.py", "handle_email"),
+                    ("api/src/services/text_processing/normalizer.py", "_speak_url_symbols"),
+                    ("api/src/services/text_processing/normalizer.py", "handle_url"),
+                    ("api/tests/test_normalizer.py", "test_url_www"),
+                ],
+            )
+        ],
+        accepted_impacts=[{"id": "flow:POST:/audio/speech", "status": "proven"}],
+        change={"base": "main", "symbols": [], "files": [{"path": "api/tests/test_normalizer.py", "role": "test_usage_candidate"}]},
+    )
+    out = r.render(result)
+
+    assert "**Established**" in out
+    # Both genuinely distinct changed files must show up as terminals...
+    assert "VoiceManager.load_voice" in out
+    assert "handle_url" in out
+    # ...but same-file neighbors of handle_url (its own helper/sibling) must
+    # not repeat as separate terminals -- one representative per file.
+    assert "handle_email" not in out
+    assert "_speak_url_symbols" not in out
+    # A test symbol must never appear as a "changed target".
+    assert "test_url_www" not in out
+
+
+def test_single_changed_target_renders_exactly_as_before():
+    """Regression: the common one-target-per-flow case is unchanged --
+    no stray '+N more' note, no behavior change for the ordinary case."""
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    assert "PetService.create" in out
+    assert "more changed target" not in out
+
+
+def test_many_changed_files_on_one_flow_caps_terminals_and_notes_remainder():
+    nodes = [(f"src/file_{i}.py", f"symbol_{i}") for i in range(5)]
+    result = _base_result(
+        affected_flows=[_flow_with_nodes("flow:a", "POST /pets", "PetController.create", nodes)],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    for i in range(r._MAX_FLOW_TERMINALS):
+        assert f"symbol_{i}" in out
+    for i in range(r._MAX_FLOW_TERMINALS, 5):
+        assert f"symbol_{i}" not in out
+    assert f"+{5 - r._MAX_FLOW_TERMINALS} more changed target(s)" in out
+
+
+# ---------------------------------------------------------------------------
+# Footer: a single link, not the same URL twice (no dashboard exists yet).
+# ---------------------------------------------------------------------------
+
+
+def test_footer_has_exactly_one_link_to_the_run():
+    result = _base_result()
+    out = r.render(result, run_url="https://example.com/runs/1")
+    assert out.count("https://example.com/runs/1") == 1
+    assert "View full analysis" not in out
+    assert "[View run](https://example.com/runs/1)" in out
+
+
+def test_footer_omits_link_entirely_when_no_run_url():
+    result = _base_result()
+    out = r.render(result, run_url=None)
+    assert out.rstrip().splitlines()[-1] == "Sydes"
+
+
+# ---------------------------------------------------------------------------
+# Coverage-limit wording: must not imply the path just shown is itself
+# unresolved when a global, repository-wide caveat is also present.
+# ---------------------------------------------------------------------------
+
+
+def test_coverage_limit_scoped_to_other_routes_when_a_path_is_established():
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        analysis_notes=["Route composition is unresolved in this repository; some routes may be missing."],
+    )
+    out = r.render(result)
+    assert "**Other coverage limits:**" in out
+    assert "**Coverage limit:**" not in out
+
+
+def test_coverage_limit_plain_label_when_nothing_established():
+    result = _base_result(
+        analysis_notes=["Route composition is unresolved in this repository; some routes may be missing."],
+    )
+    out = r.render(result)
+    assert "**Coverage limit:**" in out
+    assert "**Other coverage limits:**" not in out
+
+
 def test_main_result_unavailable_path(tmp_path):
     """The CLI entrypoint's own fallback for a missing/unreadable result
     file -- exercised end to end, not just render_unavailable() directly."""
