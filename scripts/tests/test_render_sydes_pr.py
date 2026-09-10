@@ -671,6 +671,55 @@ def test_coverage_limit_plain_label_when_nothing_established():
     assert "**Other coverage limits:**" not in out
 
 
+# ---------------------------------------------------------------------------
+# Issue 7 (final-result internal consistency): a flow with no matching
+# accepted_impacts entry must fall back to the flow's OWN impact_status,
+# never a hardcoded "proven" -- otherwise a flow explicitly marked
+# non-proven silently renders as Established the moment its accepted_impact
+# entry happens to be missing.
+# ---------------------------------------------------------------------------
+
+
+def test_flow_without_matching_impact_falls_back_to_its_own_status_not_proven():
+    result = _base_result(
+        affected_flows=[
+            {
+                "id": "flow:a",
+                "entry_label": "POST /pets",
+                "handler": "PetController.create",
+                "changed_nodes": [],
+                "impact_status": "inferred",
+            }
+        ],
+        accepted_impacts=[],  # deliberately no matching entry at all
+    )
+    out = r.render(result)
+    assert "**Established**" not in out
+    assert "Likely, not fully established" in out
+    assert "PetController.create" in out
+
+
+def test_flow_without_matching_impact_defaults_proven_only_when_flow_itself_says_so():
+    """Sanity check the other direction: the ordinary, fully-consistent
+    case (a flow whose own impact_status really is proven, matched or
+    not) must still render as Established -- the fix must not flip every
+    unmatched flow to Likely regardless of its own status."""
+    result = _base_result(
+        affected_flows=[
+            {
+                "id": "flow:a",
+                "entry_label": "POST /pets",
+                "handler": "PetController.create",
+                "changed_nodes": [],
+                "impact_status": "proven",
+            }
+        ],
+        accepted_impacts=[],
+    )
+    out = r.render(result)
+    assert "**Established**" in out
+
+
 def test_main_result_unavailable_path(tmp_path):
     """The CLI entrypoint's own fallback for a missing/unreadable result
     file -- exercised end to end, not just render_unavailable() directly."""

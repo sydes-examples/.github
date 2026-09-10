@@ -254,6 +254,21 @@ def _impact_status_by_id(result: dict[str, Any]) -> dict[str, str]:
     return {str(_get(imp, "id", default="")): str(_get(imp, "status", default="")) for imp in impacts}
 
 
+def _flow_fallback_status(flow: dict[str, Any]) -> str:
+    """A flow's OWN `impact_status` field, used only when no
+    `accepted_impacts` entry matches this flow's id at all.
+
+    The fallback must never be a hardcoded "proven": that would render a
+    flow explicitly marked non-proven (e.g. `impact_status="inferred"`) as
+    Established the moment its accepted_impacts entry happens to be
+    missing -- a real internal-consistency break (see task item 7), not a
+    theoretical one. `AffectedFlow.impact_status` already carries this
+    same "proven" default in the canonical model itself, so trusting it
+    here changes nothing for the ordinary, fully-populated case and only
+    fixes the case where the two collections disagree."""
+    return str(_get(flow, "impact_status", default="proven") or "proven")
+
+
 def _flow_routes_by_status(
     result: dict[str, Any], impact_status_by_id: dict[str, str]
 ) -> tuple[list[str], list[str]]:
@@ -268,7 +283,7 @@ def _flow_routes_by_status(
         if not route or route in seen:
             continue
         seen.add(route)
-        status = impact_status_by_id.get(str(_get(flow, "id", default="")), "proven")
+        status = impact_status_by_id.get(str(_get(flow, "id", default="")), _flow_fallback_status(flow))
         (established if status == "proven" else likely).append(route)
     return established, likely
 
@@ -502,7 +517,7 @@ def select_representative_paths(
             continue
         flow_id = str(_get(flow, "id", default=""))
         shown_impact_ids.add(flow_id)
-        status = impact_status_by_id.get(flow_id, "proven")
+        status = impact_status_by_id.get(flow_id, _flow_fallback_status(flow))
         if status == "proven":
             established_all.append((parts, omitted))
         else:
