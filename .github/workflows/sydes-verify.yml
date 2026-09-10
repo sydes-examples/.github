@@ -160,8 +160,14 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: sydes-result
+          # sydes-result.ai_recovery.json only exists when AI recovery
+          # actually ran and the CLI wrote its sidecar (--json's stem +
+          # .ai_recovery.json) -- if-no-files-found: warn means its
+          # absence (recovery off, not triggered, or unresolved) never
+          # fails this step, it just isn't in the artifact that run.
           path: |
             sydes-result.json
+            sydes-result.ai_recovery.json
             sydes-comment.md
             sydes-diagnostics.json
           if-no-files-found: warn
