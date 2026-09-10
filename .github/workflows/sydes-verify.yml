@@ -32,9 +32,13 @@ on:
         type: string
         default: "app"
       sydes_ref:
-        description: Git ref of sydes-ai/sydes to install (branch, tag, or SHA).
+        description: >-
+          Version of the `sydes` PyPI package to install (passed to
+          `pip install sydes==<value>`), e.g. "0.2.0b2". Kept as a plain
+          version string, not a git ref, so normal callers install the
+          public release the same way any other user would.
         type: string
-        default: "v0.2.0-beta.1"
+        default: "0.2.0b2"
       renderer_ref:
         description: Git ref of this repository to pull the renderer script from.
         type: string
@@ -87,7 +91,8 @@ jobs:
       - name: Install Sydes
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "git+https://github.com/sydes-ai/sydes.git@${{ inputs.sydes_ref }}"
+          python -m pip install "sydes==${{ inputs.sydes_ref }}"
+          sydes --version
 
       - name: Run Sydes verify-change
         env:
