@@ -34,11 +34,11 @@ on:
       sydes_ref:
         description: >-
           Version of the `sydes` PyPI package to install (passed to
-          `pip install sydes==<value>`), e.g. "0.2.0b2". Kept as a plain
+          `pip install sydes==<value>`), e.g. "0.2.0b6". Kept as a plain
           version string, not a git ref, so normal callers install the
           public release the same way any other user would.
         type: string
-        default: "0.2.0b2"
+        default: "0.2.0b6"
       renderer_ref:
         description: Git ref of this repository to pull the renderer script from.
         type: string
