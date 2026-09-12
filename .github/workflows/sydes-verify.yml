@@ -43,6 +43,20 @@ on:
         description: Git ref of this repository to pull the renderer script from.
         type: string
         default: "main"
+      recovery_route_context:
+        description: >-
+          Pass `--recovery-route-context` to `sydes verify-change` (see
+          that flag's own help for what it does). Off by default —
+          existing callers see no behavior change.
+        type: boolean
+        default: false
+      recovery_graph_path_search:
+        description: >-
+          Pass `--recovery-graph-path-search` to `sydes verify-change`
+          (see that flag's own help for what it does). Off by default —
+          existing callers see no behavior change.
+        type: boolean
+        default: false
     secrets:
       OPENAI_API_KEY:
         description: OpenAI key for `sydes verify-change`'s LLM calls.
@@ -104,6 +118,13 @@ jobs:
           REPO_ALIAS: ${{ inputs.repo_alias }}
           MODEL: ${{ inputs.model }}
         run: |
+          EXTRA_FLAGS=()
+          if [ "${{ inputs.recovery_route_context }}" = "true" ]; then
+            EXTRA_FLAGS+=(--recovery-route-context)
+          fi
+          if [ "${{ inputs.recovery_graph_path_search }}" = "true" ]; then
+            EXTRA_FLAGS+=(--recovery-graph-path-search)
+          fi
           sydes verify-change \
             --base "$BASE_SHA" \
             --repo "${REPO_ALIAS}=." \
@@ -113,6 +134,7 @@ jobs:
             --model "$MODEL" \
             --no-run-tests \
             --verbose \
+            "${EXTRA_FLAGS[@]}" \
             --json sydes-result.json
 
       # Rendering runs even when the analysis step failed, so the PR still
