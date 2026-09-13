@@ -670,6 +670,31 @@ def _meaningful_obligations(result: dict[str, Any]) -> list[dict[str, Any]]:
     return introduced if introduced else real
 
 
+def _relevant_tests_row(counts: dict[str, Any]) -> str:
+    """Never collapse "no test verifies this" and "no test even runs near
+    this" into the same "None identified" text -- that conflation is what
+    hid 30 real (if non-gating) supporting tests behind a false negative on
+    a real NestJS evaluation run. `tests_verifying_behavior`/
+    `tests_supporting_behavior`/`tests_exercising_flows` are computed across
+    every obligation (required or not; see `VerificationCounts`), so a test
+    that only landed on an advisory test-matrix obligation still shows up
+    here even though it can never gate the verdict on its own.
+    """
+    verifying = counts.get("tests_verifying_behavior", 0)
+    supporting = counts.get("tests_supporting_behavior", 0)
+    exercising = counts.get("tests_exercising_flows", 0)
+    if not exercising:
+        return "None identified"
+    if verifying:
+        return f"{verifying} directly verify the changed behavior ({exercising} exercise the affected flow(s))"
+    if supporting:
+        return (
+            f"{exercising} test(s) exercise the affected flow(s); {supporting} support the "
+            "relevant behavior; none directly verify the changed behavior"
+        )
+    return f"{exercising} test(s) exercise the affected flow(s); none assert the changed behavior"
+
+
 def render_verification(result: dict[str, Any], lines: list[str]) -> None:
     """Human questions/status, not internal counters -- and never a raw
     obligation statement (empirically, real statements are inconsistent
@@ -704,9 +729,7 @@ def render_verification(result: dict[str, Any], lines: list[str]) -> None:
         lines.append(f"| {_OBLIGATION_CATEGORY_LABEL[kind]} | {status} |")
         rows_emitted += 1
 
-    mapped_tests = counts.get("mapped_tests", 0)
-    tests_row = "None identified" if mapped_tests == 0 else str(mapped_tests)
-    lines.append(f"| Relevant tests | {tests_row} |")
+    lines.append(f"| Relevant tests | {_relevant_tests_row(counts)} |")
 
     executed = counts.get("tests_executed", 0)
     # "Not run" is a deliberate, quiet phrasing for the common --no-run-tests
@@ -741,12 +764,15 @@ def render_before_merge(result: dict[str, Any], lines: list[str]) -> None:
     the section is omitted rather than padded with something ungrounded."""
     _rows, wider_areas, has_any_impact = _system_impact_data(result)
     counts = _get(result, "summary", "counts", default={})
-    mapped_tests = counts.get("mapped_tests", 0)
+    # Not `mapped_tests` (required obligations only) -- a test that verifies
+    # a non-required, advisory obligation is still a real reason not to ask
+    # for another one.
+    verifying_tests = counts.get("tests_verifying_behavior", 0)
 
     bullets: list[str] = []
     if wider_areas:
         bullets.append("Verify the changed behavior on the wider API surface before merging.")
-    if mapped_tests == 0 and has_any_impact:
+    if verifying_tests == 0 and has_any_impact:
         bullets.append("Add or run a test covering the affected behavior before merging.")
 
     if not bullets:

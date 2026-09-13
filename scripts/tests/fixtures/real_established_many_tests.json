@@ -189,7 +189,10 @@
       "impacts_proven": 2,
       "impacts_inferred": 0,
       "impacts_not_modeled": 0,
-      "unresolved_changed_symbols": 3
+      "unresolved_changed_symbols": 3,
+      "tests_exercising_flows": 29,
+      "tests_supporting_behavior": 0,
+      "tests_verifying_behavior": 29
     },
     "risk_reasons": [
       "9 obligation(s) could not be executed",

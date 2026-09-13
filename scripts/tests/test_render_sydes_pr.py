@@ -174,6 +174,68 @@ def test_no_mapped_tests_says_none_not_zero_confusingly():
 
 
 # ---------------------------------------------------------------------------
+# Regression: sydes-examples/nestjs-boilerplate#1 real evaluation run.
+# `mapped_tests` (required obligations only) was 0 while 30 real tests
+# exercised/supported the affected flows via non-required (test-matrix)
+# obligations -- the renderer collapsed that into "None identified", which
+# read as "no tests exist near this change" when 30 actually did. The three
+# distinct-test counts below are computed across every obligation (see
+# `VerificationCounts`), independent of what gates the verdict.
+# ---------------------------------------------------------------------------
+
+
+def test_supporting_evidence_is_shown_instead_of_none_identified():
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /login", "AuthController.login", "AuthService.login")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        summary={
+            "verdict": "VERIFICATION INCOMPLETE",
+            "risk": "MEDIUM",
+            "counts": {
+                "mapped_tests": 0,
+                "supporting_tests": 30,
+                "tests_exercising_flows": 5,
+                "tests_supporting_behavior": 5,
+                "tests_verifying_behavior": 0,
+                "tests_executed": 0,
+            },
+        },
+    )
+    out = r.render(result)
+    assert "| Relevant tests | None identified |" not in out
+    row = [line for line in out.splitlines() if line.startswith("| Relevant tests |")][0]
+    assert "5" in row
+    assert "none directly verify" in row
+    # Real evidence exists somewhere, but none of it verifies the changed
+    # behavior directly -- the before-merge nudge should still fire.
+    assert "- Add or run a test covering the affected behavior before merging." in out
+
+
+def test_verifying_tests_shown_as_the_primary_count():
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /login", "AuthController.login", "AuthService.login")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        summary={
+            "verdict": "VERIFICATION INCOMPLETE",
+            "risk": "MEDIUM",
+            "counts": {
+                "mapped_tests": 0,
+                "supporting_tests": 0,
+                "tests_exercising_flows": 2,
+                "tests_supporting_behavior": 0,
+                "tests_verifying_behavior": 2,
+                "tests_executed": 0,
+            },
+        },
+    )
+    out = r.render(result)
+    row = [line for line in out.splitlines() if line.startswith("| Relevant tests |")][0]
+    assert "2 directly verify the changed behavior" in row
+    # Real verifying evidence found -- the before-merge nudge must not fire.
+    assert "- Add or run a test covering the affected behavior before merging." not in out
+
+
+# ---------------------------------------------------------------------------
 # 6. Tests identified but not executed (real data, --no-run-tests case)
 # ---------------------------------------------------------------------------
 
@@ -181,7 +243,7 @@ def test_no_mapped_tests_says_none_not_zero_confusingly():
 def test_tests_identified_not_executed_reads_as_intentional():
     result = _load("real_established_many_tests.json")
     out = r.render(result)
-    assert re.search(r"\| Relevant tests \| \d+ \|", out)
+    assert re.search(r"\| Relevant tests \| \d+ directly verify the changed behavior", out)
     assert "| Tests executed by Sydes | Not run |" in out
     # Must never look like a failure -- no failure-shaped words near it.
     verification_section = out.split("### Verification")[1].split("###")[0]
