@@ -467,39 +467,53 @@ def _flow_changed_terminals(flow: dict[str, Any], test_paths: set[str], handler:
     return [symbol_by_file[f] for f in file_order]
 
 
-def _flow_path_label(flow: dict[str, Any], test_paths: set[str]) -> tuple[list[str], int]:
-    """Build a route -> handler -> changed-target(s) label for one affected
-    flow -- the concrete, reviewer-legible form of "what this change
-    reaches", e.g. `POST /pets` -> `PetController.create` -> `PetService.create`.
+def _flow_path_label(
+    flow: dict[str, Any], test_paths: set[str],
+) -> tuple[list[str], list[str], int]:
+    """Build the TRUE CONNECTED PATH for one affected flow -- route then
+    handler, e.g. `POST /pets` -> `PetController.create` -- separately from
+    its AFFECTED/FAN-OUT TARGETS: the changed-target terminals `changed_nodes`
+    also names for this flow.
 
-    Returns (parts, omitted_terminal_count). `parts` holds the route and
-    handler followed by up to `_MAX_FLOW_TERMINALS` changed-target
-    terminals (see `_flow_changed_terminals`) -- almost always one, but
-    more than one when this flow's own evidence genuinely reaches changed
-    symbols in more than one file. If no production symbol exists beyond
-    the handler itself, the path is left at route -> handler with no
-    further segment."""
-    parts = [str(_get(flow, "entry_label", default="") or "").strip()]
+    `changed_nodes` is every symbol the whole diff touched, attached to
+    every flow alike -- it is not itself proof that the handler's own
+    evidence reaches each one via a real call. Rendering those terminals as
+    more arrow-chained hops after the handler (`route -> handler -> A -> B`)
+    implied a sequence Sydes never established: two files in the same diff
+    are not thereby connected to each other or, necessarily, to this
+    specific route. They are real facts (this diff did touch them) but a
+    fan-out set, not a further path -- so they are returned and rendered
+    separately, never chained onto the connected path.
+
+    Returns (path_parts, fanout_terminals, omitted_terminal_count).
+    `path_parts` holds only the route and, when distinct, the handler --
+    the one hop this data actually establishes. `fanout_terminals` holds up
+    to `_MAX_FLOW_TERMINALS` changed-target terminals (see
+    `_flow_changed_terminals`); `omitted_terminal_count` is how many more
+    existed beyond that cap."""
+    path_parts = [str(_get(flow, "entry_label", default="") or "").strip()]
     handler = str(_get(flow, "handler", default="") or "").strip()
-    if handler and handler != parts[0]:
-        parts.append(handler)
+    if handler and handler != path_parts[0]:
+        path_parts.append(handler)
     terminals = _flow_changed_terminals(flow, test_paths, handler)
-    parts.extend(terminals[:_MAX_FLOW_TERMINALS])
-    return parts, max(0, len(terminals) - _MAX_FLOW_TERMINALS)
+    fanout_terminals = terminals[:_MAX_FLOW_TERMINALS]
+    return path_parts, fanout_terminals, max(0, len(terminals) - _MAX_FLOW_TERMINALS)
 
 
 def select_representative_paths(
     result: dict[str, Any],
-) -> tuple[list[tuple[list[str], int]], list[str], int, int]:
+) -> tuple[list[tuple[list[str], list[str], int]], list[str], int, int]:
     """Deterministic representative-path selection -- the rule that keeps a
     20-route change from dumping 20 paths into the comment.
 
     Returns (established_paths, likely_labels, established_remaining,
-    likely_remaining). `established_paths` are (parts, omitted_terminal_count)
-    pairs -- `parts` is a route->handler->target(s) list for the
-    fenced/tree rendering, `omitted_terminal_count` is how many further
-    distinct changed-target terminals this same flow had beyond what
-    `_flow_path_label` already kept (see `_MAX_FLOW_TERMINALS`).
+    likely_remaining). `established_paths` are (path_parts, fanout_terminals,
+    omitted_terminal_count) triples -- `path_parts` is the route->handler
+    TRUE CONNECTED PATH for the fenced/tree rendering, `fanout_terminals` are
+    this flow's AFFECTED/FAN-OUT changed-target terminals (rendered as a
+    set, never chained onto `path_parts`), and `omitted_terminal_count` is
+    how many further distinct changed-target terminals this same flow had
+    beyond what `_flow_path_label` already kept (see `_MAX_FLOW_TERMINALS`).
     `likely_labels` are plain strings (inferred impacts rarely have a full
     traced chain to show)."""
     flows = _as_list(_get(result, "affected_flows", default=[]))
@@ -507,21 +521,25 @@ def select_representative_paths(
     impact_status_by_id = _impact_status_by_id(result)
     test_paths = _test_file_paths(result)
 
-    established_all: list[tuple[list[str], int]] = []
+    established_all: list[tuple[list[str], list[str], int]] = []
     likely_all: list[str] = []
     shown_impact_ids: set[str] = set()
 
     for flow in flows:
-        parts, omitted = _flow_path_label(flow, test_paths)
+        parts, fanout_terminals, omitted = _flow_path_label(flow, test_paths)
         if not parts or not parts[0]:
             continue
         flow_id = str(_get(flow, "id", default=""))
         shown_impact_ids.add(flow_id)
         status = impact_status_by_id.get(flow_id, _flow_fallback_status(flow))
         if status == "proven":
-            established_all.append((parts, omitted))
+            established_all.append((parts, fanout_terminals, omitted))
         else:
-            likely_all.append(" → ".join(parts))
+            # A "likely" impact has no established path at all; the fan-out
+            # terminals (if any) are folded into one plain label rather than
+            # given their own set notation, since nothing here is proven
+            # either way.
+            likely_all.append(" → ".join(parts + fanout_terminals))
 
     for impact in impacts:
         if str(_get(impact, "id", default="")) in shown_impact_ids:
@@ -577,12 +595,29 @@ def render_system_impact(result: dict[str, Any], lines: list[str]) -> None:
     if established:
         lines.append("**Established**")
         lines.append("")
-        for idx, (parts, omitted_terminals) in enumerate(established):
-            if len(parts) > 1:
+        for idx, (parts, fanout_terminals, omitted_terminals) in enumerate(established):
+            if len(parts) > 1 or fanout_terminals:
                 lines.append("```text")
                 lines.append(parts[0])
                 for p in parts[1:]:
                     lines.append(f"  → {p}")
+                if len(fanout_terminals) == 1:
+                    # Exactly one changed-target terminal reads, as before,
+                    # as one more hop past the handler -- the routine case
+                    # this section's whole design assumes (route -> handler
+                    # -> the one thing it changes).
+                    lines.append(f"  → {fanout_terminals[0]}")
+                elif fanout_terminals:
+                    # More than one is AFFECTED/FAN-OUT, not a further hop in
+                    # the connected path above: `changed_nodes` names every
+                    # symbol the whole diff touched, not specifically what
+                    # this route's own evidence calls into -- two files in
+                    # one diff are not thereby connected to each other, or to
+                    # this route, in sequence. Set notation (`{A, B}`), never
+                    # another `→`, so this never reads as a proven sequence
+                    # route -> handler -> A -> B.
+                    joined = ", ".join(fanout_terminals)
+                    lines.append(f"  also touches: {{{joined}}}")
                 if omitted_terminals:
                     lines.append(f"  … +{omitted_terminals} more changed target(s)")
                 lines.append("```")

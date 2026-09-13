@@ -693,6 +693,65 @@ def test_many_changed_files_on_one_flow_caps_terminals_and_notes_remainder():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# TRUE CONNECTED PATH vs. AFFECTED/FAN-OUT TARGETS: a flow reaching changed
+# symbols in more than one file must not render as if route -> handler ->
+# terminal_a -> terminal_b were one proven causal sequence. `changed_nodes`
+# is the whole diff's changed-symbol set attached to every flow alike, not
+# per-flow reachability -- terminal_a and terminal_b are not thereby
+# connected to each other, or necessarily to this specific route, in that
+# order. Confirmed against a real run (sydes-examples/realworld-axum-sqlx
+# PR #3): every one of 12 unrelated routes' flows carried the identical
+# 22-symbol changed_nodes list, and the old renderer chained up to
+# `_MAX_FLOW_TERMINALS` of them onto the route/handler with `→`, implying a
+# call sequence that was never established.
+# ---------------------------------------------------------------------------
+
+
+def test_multiple_fanout_terminals_are_not_chained_as_a_sequence():
+    result = _base_result(
+        affected_flows=[
+            _flow_with_nodes(
+                "flow:GET:/api/articles/feed",
+                "GET /api/articles/feed",
+                "feed_articles",
+                [
+                    ("src/http/articles/comments.rs", "add_comment"),
+                    ("src/http/articles/mod.rs", "create_article"),
+                ],
+            )
+        ],
+        accepted_impacts=[{"id": "flow:GET:/api/articles/feed", "status": "proven"}],
+    )
+    out = r.render(result)
+
+    # The true, established hop still renders as a connected arrow chain.
+    assert "GET /api/articles/feed" in out
+    assert "  → feed_articles" in out
+    # The fan-out terminals must both still be visible ...
+    assert "add_comment" in out
+    assert "create_article" in out
+    # ... but never as if chained onto the route/handler as further hops:
+    # no "→ add_comment" or "→ create_article" anywhere in the output.
+    assert "→ add_comment" not in out
+    assert "→ create_article" not in out
+    # Rendered instead as an explicit, unordered set.
+    assert "also touches: {add_comment, create_article}" in out
+
+
+def test_single_fanout_terminal_still_reads_as_one_established_hop():
+    """The common, narrower case (exactly one changed-target terminal) is
+    unaffected by the fan-out fix -- still one hop past the handler, still
+    no set notation for a single item."""
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    assert "  → PetService.create" in out
+    assert "also touches" not in out
+
+
 def test_footer_has_exactly_one_link_to_the_run():
     result = _base_result()
     out = r.render(result, run_url="https://example.com/runs/1")
