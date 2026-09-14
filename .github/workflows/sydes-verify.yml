@@ -86,17 +86,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      # A separate, pinned checkout of the renderer — it lives here, not in
-      # the repository under test.
-      - name: Check out Sydes integration scripts
-        uses: actions/checkout@v5
-        with:
-          repository: sydes-examples/.github
-          ref: ${{ inputs.renderer_ref }}
-          path: _sydes-integration
-          sparse-checkout: |
-            scripts
-
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -136,6 +125,29 @@ jobs:
             --verbose \
             "${EXTRA_FLAGS[@]}" \
             --json sydes-result.json
+
+      # A separate, pinned checkout of the renderer — it lives here, not in
+      # the repository under test. Deliberately checked out AFTER "Run Sydes
+      # verify-change", not before: this directory used to be checked out
+      # first, directly inside the same working tree `--repo app=.` points
+      # Sydes at, and Sydes correctly scoped its scan to that whole tree --
+      # including this directory. On a real PR that put one of this
+      # checkout's own test files (`_sydes-integration/scripts/tests/
+      # test_render_sydes_pr.py`) in front of Sydes' test-mapping pass, which
+      # matched it as "evidence" for an app route purely because a string in
+      # one of its fixtures happened to overlap the route's path -- a false,
+      # cross-repository attribution with nothing to do with the PR under
+      # test. Checking this out only once analysis is already done removes
+      # it from the tree Sydes ever sees, with no change to Sydes itself.
+      - name: Check out Sydes integration scripts
+        if: always()
+        uses: actions/checkout@v5
+        with:
+          repository: sydes-examples/.github
+          ref: ${{ inputs.renderer_ref }}
+          path: _sydes-integration
+          sparse-checkout: |
+            scripts
 
       # Rendering runs even when the analysis step failed, so the PR still
       # gets an explanation instead of silence.
