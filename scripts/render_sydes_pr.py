@@ -435,72 +435,127 @@ def summarize_system_impact_areas(result: dict[str, Any]) -> list[tuple[str, str
 #: collapsing to an arbitrary single pick.
 _MAX_FLOW_TERMINALS = 3
 
+#: `flow.steps` layer values that represent a real, structurally-followed
+#: call out of the handler -- see `sydes.trace.layered_contract`, which only
+#: emits a `followed_call` step after actually resolving a call site inside
+#: the handler's own body (or a symbol it in turn calls) to a real target.
+#: Never `changed_nodes`: that list is the whole diff's changed-symbol set,
+#: identical across every flow in the result, so it is not itself evidence
+#: that THIS route's handler reaches any particular one of them.
+_CONNECTED_CALL_LAYERS = {"followed_call"}
+#: Statuses trusted enough to show as connected -- "grounded" is the only
+#: one observed in real results; anything else (should it ever appear) is
+#: excluded rather than guessed to be equally solid. Empty string means the
+#: field was omitted, treated as unknown-but-not-explicitly-uncertain.
+_CONNECTED_STEP_STATUSES = {"", "grounded"}
 
-def _flow_changed_terminals(flow: dict[str, Any], test_paths: set[str], handler: str) -> list[str]:
-    """The changed PRODUCTION symbol(s) this flow's evidence actually
-    reaches, one per distinct file among `changed_nodes`.
 
-    A flow's `changed_nodes` mixes every production symbol touched with any
-    newly-added/updated test functions, in diff/graph order rather than
-    call-depth order -- test symbols are dropped via `test_paths`, same as
-    before. Multiple changed symbols in the SAME file are, in practice,
-    almost always part of one underlying edit (a helper extracted from, or
-    called by, the symbol next to it) -- so at most one representative
-    symbol is kept per file (the last one encountered), which naturally
-    collapses that case to a single terminal without needing to understand
-    the edit semantically. Symbols in DIFFERENT files are genuinely
-    separate changed locations and are never merged: this is what lets a
-    flow that reaches two unrelated fixes (e.g. a normalizer fix and an
-    unrelated voice-loading fix) show both instead of silently keeping only
-    one. Order of the returned list follows first-appearance order of each
-    file in `changed_nodes`; the caller caps how many are actually shown."""
-    changed = _as_list(_get(flow, "changed_nodes", default=[]))
-    symbol_by_file: dict[str, str] = {}
-    file_order: list[str] = []
-    for node in changed:
+def _canonical_symbol_lookup(flow: dict[str, Any]) -> dict[tuple[str, int], str]:
+    """A (file, line) -> qualified-symbol lookup built from this flow's own
+    `changed_nodes`.
+
+    Used ONLY to upgrade a step's bare or receiver-variable-qualified symbol
+    name (e.g. Go's `server.renewAccessToken`, a lowercase receiver
+    variable, not the type) to the canonical, class/type-qualified spelling
+    the exact same declaration line is already known under elsewhere in the
+    result (`Server.renewAccessToken`). Never used to decide WHICH symbols
+    are shown -- `changed_nodes` remains untrusted for that, per
+    `_flow_connected_calls` -- only how an already-selected one is spelled.
+    """
+    lookup: dict[tuple[str, int], str] = {}
+    for node in _as_list(_get(flow, "changed_nodes", default=[])):
+        file = str(_get(node, "file", default="") or "")
+        line = _get(node, "line", default=None)
         symbol = str(_get(node, "symbol", default="") or "").strip()
+        if file and isinstance(line, int) and symbol:
+            lookup[(file, line)] = symbol
+    return lookup
+
+
+def _canonical_name(fallback: str, file: str, line: Any, lookup: dict[tuple[str, int], str]) -> str:
+    if isinstance(line, int) and (file, line) in lookup:
+        return lookup[(file, line)]
+    return fallback
+
+
+def _handler_step(flow: dict[str, Any]) -> dict[str, Any] | None:
+    """The one step that names the handler's own declaration -- `depth 1`,
+    `layer == "handler"`, `kind == "handler"` specifically (not a
+    same-depth statement/transform/response step inside the handler body,
+    which shares the depth but not the handler's own declaration line)."""
+    for step in _as_list(_get(flow, "steps", default=[])):
+        if str(_get(step, "layer", default="")) == "handler" and str(_get(step, "kind", default="")) == "handler":
+            return step
+    return None
+
+
+def _flow_connected_calls(flow: dict[str, Any], test_paths: set[str], handler: str) -> list[str]:
+    """The symbol(s) this flow's own evidence actually shows the handler
+    calling into -- read from `steps`, never from `changed_nodes` (see the
+    module-level note above `_CONNECTED_CALL_LAYERS`). A symbol only
+    appears here when Sydes actually followed a real call to it from this
+    specific route's own handler; two unrelated files changed in the same
+    diff no longer appear here just for having been touched."""
+    lookup = _canonical_symbol_lookup(flow)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for step in _as_list(_get(flow, "steps", default=[])):
+        if str(_get(step, "layer", default="")) not in _CONNECTED_CALL_LAYERS:
+            continue
+        if str(_get(step, "status", default="")) not in _CONNECTED_STEP_STATUSES:
+            continue
+        file = str(_get(step, "file", default="") or "")
+        if file in test_paths:
+            continue
+        symbol = str(_get(step, "symbol", default="") or "").strip()
         if not symbol or symbol == handler:
             continue
-        file_path = str(_get(node, "file", default="") or "")
-        if file_path in test_paths:
+        canonical = _canonical_name(symbol, file, _get(step, "line_start", default=None), lookup)
+        if canonical in seen:
             continue
-        if file_path not in symbol_by_file:
-            file_order.append(file_path)
-        symbol_by_file[file_path] = symbol  # keep overwriting -- last one in this file wins
-    return [symbol_by_file[f] for f in file_order]
+        seen.add(canonical)
+        ordered.append(canonical)
+    return ordered
 
 
 def _flow_path_label(
     flow: dict[str, Any], test_paths: set[str],
 ) -> tuple[list[str], list[str], int]:
-    """Build the TRUE CONNECTED PATH for one affected flow -- route then
-    handler, e.g. `POST /pets` -> `PetController.create` -- separately from
-    its AFFECTED/FAN-OUT TARGETS: the changed-target terminals `changed_nodes`
-    also names for this flow.
+    """Build the TRUE CONNECTED PATH for one affected flow: route, then its
+    canonical handler, then -- ONLY when this flow's own evidence
+    establishes a real call from that handler -- the symbol(s) it is shown
+    calling into (see `_flow_connected_calls`). Never a changed-symbol
+    dump: two files touched by the same diff are not thereby connected to
+    each other, or to this specific route, just by both having changed.
 
-    `changed_nodes` is every symbol the whole diff touched, attached to
-    every flow alike -- it is not itself proof that the handler's own
-    evidence reaches each one via a real call. Rendering those terminals as
-    more arrow-chained hops after the handler (`route -> handler -> A -> B`)
-    implied a sequence Sydes never established: two files in the same diff
-    are not thereby connected to each other or, necessarily, to this
-    specific route. They are real facts (this diff did touch them) but a
-    fan-out set, not a further path -- so they are returned and rendered
-    separately, never chained onto the connected path.
-
-    Returns (path_parts, fanout_terminals, omitted_terminal_count).
-    `path_parts` holds only the route and, when distinct, the handler --
-    the one hop this data actually establishes. `fanout_terminals` holds up
-    to `_MAX_FLOW_TERMINALS` changed-target terminals (see
-    `_flow_changed_terminals`); `omitted_terminal_count` is how many more
-    existed beyond that cap."""
+    Returns (path_parts, connected_calls, omitted_count). `path_parts` is
+    `[route]` or `[route, handler]` -- the route/handler hop this data
+    always establishes when a handler is resolved at all. `connected_calls`
+    holds up to `_MAX_FLOW_TERMINALS` symbols the handler is actually shown
+    calling; `omitted_count` is how many more existed beyond that cap. Both
+    are empty when no deeper connectivity is established for this flow --
+    stopping at route -> handler is then the correct, complete answer, not
+    a partial one; richer, safely-established connectivity beyond one hop
+    is not fabricated to fill the gap.
+    """
     path_parts = [str(_get(flow, "entry_label", default="") or "").strip()]
     handler = str(_get(flow, "handler", default="") or "").strip()
-    if handler and handler != path_parts[0]:
-        path_parts.append(handler)
-    terminals = _flow_changed_terminals(flow, test_paths, handler)
-    fanout_terminals = terminals[:_MAX_FLOW_TERMINALS]
-    return path_parts, fanout_terminals, max(0, len(terminals) - _MAX_FLOW_TERMINALS)
+    canonical_handler = handler
+    if handler:
+        handler_step = _handler_step(flow)
+        if handler_step is not None:
+            lookup = _canonical_symbol_lookup(flow)
+            canonical_handler = _canonical_name(
+                handler,
+                str(_get(handler_step, "file", default="") or ""),
+                _get(handler_step, "line_start", default=None),
+                lookup,
+            )
+    if canonical_handler and canonical_handler != path_parts[0]:
+        path_parts.append(canonical_handler)
+    connected = _flow_connected_calls(flow, test_paths, handler) if len(path_parts) > 1 else []
+    capped = connected[:_MAX_FLOW_TERMINALS]
+    return path_parts, capped, max(0, len(connected) - _MAX_FLOW_TERMINALS)
 
 
 def select_representative_paths(
@@ -510,15 +565,17 @@ def select_representative_paths(
     20-route change from dumping 20 paths into the comment.
 
     Returns (established_paths, likely_labels, established_remaining,
-    likely_remaining). `established_paths` are (path_parts, fanout_terminals,
-    omitted_terminal_count) triples -- `path_parts` is the route->handler
-    TRUE CONNECTED PATH for the fenced/tree rendering, `fanout_terminals` are
-    this flow's AFFECTED/FAN-OUT changed-target terminals (rendered as a
-    set, never chained onto `path_parts`), and `omitted_terminal_count` is
-    how many further distinct changed-target terminals this same flow had
-    beyond what `_flow_path_label` already kept (see `_MAX_FLOW_TERMINALS`).
-    `likely_labels` are plain strings (inferred impacts rarely have a full
-    traced chain to show)."""
+    likely_remaining). `established_paths` are (path_parts, connected_calls,
+    omitted_count) triples -- `path_parts` is the route->handler TRUE
+    CONNECTED PATH for the fenced/tree rendering, `connected_calls` are the
+    symbol(s) this flow's own evidence shows the handler actually calling
+    (never a whole-diff changed-symbol dump -- see `_flow_connected_calls`),
+    rendered as a set, never chained onto `path_parts` as further hops
+    (Sydes proves "handler calls each of these", not an order between
+    them), and `omitted_count` is how many further such calls this same
+    flow had beyond what `_flow_path_label` already kept (see
+    `_MAX_FLOW_TERMINALS`). `likely_labels` are plain strings (inferred
+    impacts rarely have a full traced chain to show)."""
     flows = _as_list(_get(result, "affected_flows", default=[]))
     impacts = _as_list(_get(result, "accepted_impacts", default=[]))
     impact_status_by_id = _impact_status_by_id(result)
@@ -529,20 +586,20 @@ def select_representative_paths(
     shown_impact_ids: set[str] = set()
 
     for flow in flows:
-        parts, fanout_terminals, omitted = _flow_path_label(flow, test_paths)
+        parts, connected_calls, omitted = _flow_path_label(flow, test_paths)
         if not parts or not parts[0]:
             continue
         flow_id = str(_get(flow, "id", default=""))
         shown_impact_ids.add(flow_id)
         status = impact_status_by_id.get(flow_id, _flow_fallback_status(flow))
         if status == "proven":
-            established_all.append((parts, fanout_terminals, omitted))
+            established_all.append((parts, connected_calls, omitted))
         else:
-            # A "likely" impact has no established path at all; the fan-out
-            # terminals (if any) are folded into one plain label rather than
-            # given their own set notation, since nothing here is proven
-            # either way.
-            likely_all.append(" → ".join(parts + fanout_terminals))
+            # A "likely" impact has no established path at all; the
+            # connected calls (if any) are folded into one plain label
+            # rather than given their own set notation, since nothing here
+            # is proven either way.
+            likely_all.append(" → ".join(parts + connected_calls))
 
     for impact in impacts:
         if str(_get(impact, "id", default="")) in shown_impact_ids:
@@ -598,31 +655,32 @@ def render_system_impact(result: dict[str, Any], lines: list[str]) -> None:
     if established:
         lines.append("**Established**")
         lines.append("")
-        for idx, (parts, fanout_terminals, omitted_terminals) in enumerate(established):
-            if len(parts) > 1 or fanout_terminals:
+        for idx, (parts, connected_calls, omitted_calls) in enumerate(established):
+            if len(parts) > 1 or connected_calls:
                 lines.append("```text")
                 lines.append(parts[0])
                 for p in parts[1:]:
                     lines.append(f"  → {p}")
-                if len(fanout_terminals) == 1:
-                    # Exactly one changed-target terminal reads, as before,
-                    # as one more hop past the handler -- the routine case
-                    # this section's whole design assumes (route -> handler
-                    # -> the one thing it changes).
-                    lines.append(f"  → {fanout_terminals[0]}")
-                elif fanout_terminals:
-                    # More than one is AFFECTED/FAN-OUT, not a further hop in
-                    # the connected path above: `changed_nodes` names every
-                    # symbol the whole diff touched, not specifically what
-                    # this route's own evidence calls into -- two files in
-                    # one diff are not thereby connected to each other, or to
-                    # this route, in sequence. Set notation (`{A, B}`), never
-                    # another `→`, so this never reads as a proven sequence
-                    # route -> handler -> A -> B.
-                    joined = ", ".join(fanout_terminals)
-                    lines.append(f"  also touches: {{{joined}}}")
-                if omitted_terminals:
-                    lines.append(f"  … +{omitted_terminals} more changed target(s)")
+                if len(connected_calls) == 1:
+                    # Exactly one proven call out of the handler reads, as
+                    # one more hop past it -- the routine case this
+                    # section's whole design assumes (route -> handler ->
+                    # the one thing it calls).
+                    lines.append(f"  → {connected_calls[0]}")
+                elif connected_calls:
+                    # More than one: the handler is proven to call each of
+                    # these, but not proven to call them in this order (or
+                    # any particular order) -- set notation (`{A, B}`),
+                    # never another `→`, so this never implies a sequence
+                    # route -> handler -> A -> B that was never traced.
+                    # Unlike the old rendering, everything in this set is
+                    # itself route-specific, structurally-followed evidence
+                    # (see `_flow_connected_calls`) -- never a whole-diff
+                    # changed-symbol dump.
+                    joined = ", ".join(connected_calls)
+                    lines.append(f"  handler also calls: {{{joined}}}")
+                if omitted_calls:
+                    lines.append(f"  … +{omitted_calls} more traced call(s)")
                 lines.append("```")
                 if idx < len(established) - 1:
                     lines.append("")  # blank line between fences -- otherwise

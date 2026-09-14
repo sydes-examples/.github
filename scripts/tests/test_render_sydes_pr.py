@@ -35,12 +35,22 @@ def _load(name: str) -> dict:
 
 
 def _make_flow(flow_id: str, entry_label: str, handler: str, symbol: str, obligations=None) -> dict:
+    """A flow with exactly one proven, route-specific call out of the
+    handler (`symbol`, via a `followed_call` step) -- the routine one-hop
+    case. `changed_nodes` mirrors the diff-wide changed set (unrelated to
+    which symbols are shown; see `_flow_connected_calls`), kept here only
+    because several existing tests assert on it being present as raw
+    "changed" data, not as connectivity evidence."""
     return {
         "id": flow_id,
         "entry_kind": "route",
         "entry_label": entry_label,
         "handler": handler,
         "changed_nodes": [{"repo": "app", "file": "src/app.py", "symbol": symbol}],
+        "steps": [
+            {"layer": "handler", "kind": "handler", "symbol": handler, "file": "src/handler.py", "line_start": 10, "status": "grounded"},
+            {"layer": "followed_call", "kind": "service_call", "symbol": symbol, "file": "src/app.py", "line_start": 20, "status": "grounded"},
+        ],
         "obligations": obligations or [],
     }
 
@@ -642,53 +652,117 @@ def test_before_merge_omitted_when_no_impact_was_found_at_all():
 # ---------------------------------------------------------------------------
 
 
-def _flow_with_nodes(flow_id: str, entry_label: str, handler: str, nodes: list[tuple[str, str]]) -> dict:
-    """`nodes` is a list of (file, symbol) pairs, in the order they'd appear
-    in `changed_nodes` -- lets a test build a flow whose changed_nodes span
-    more than one file (or include test-file entries), unlike `_make_flow`
-    which only ever attaches a single symbol."""
+def _step(layer: str, symbol: str, file: str, line_start: int, status: str = "grounded", kind: str | None = None) -> dict:
+    return {
+        "layer": layer,
+        "kind": kind or ("handler" if layer == "handler" else "service_call"),
+        "symbol": symbol,
+        "file": file,
+        "line_start": line_start,
+        "status": status,
+    }
+
+
+def _flow_with_steps(
+    flow_id: str,
+    entry_label: str,
+    handler: str,
+    handler_loc: tuple[str, int],
+    calls: list[tuple[str, str, int]],
+    changed_nodes: list[tuple[str, str, int]] | None = None,
+) -> dict:
+    """`calls` is a list of (file, symbol, line_start) `followed_call` steps
+    -- real, structurally-followed calls out of the handler, the ONLY
+    source `_flow_connected_calls` reads. `changed_nodes` (file, symbol,
+    line) is separate, whole-diff changed-symbol data: present only to
+    exercise/prove it is NOT used for connectivity, and (when a triple's
+    file+line matches a step) to supply canonical naming."""
+    handler_file, handler_line = handler_loc
     return {
         "id": flow_id,
         "entry_kind": "route",
         "entry_label": entry_label,
         "handler": handler,
-        "changed_nodes": [{"repo": "app", "file": f, "symbol": s} for f, s in nodes],
+        "changed_nodes": [
+            {"repo": "app", "file": f, "symbol": s, "line": ln} for f, s, ln in (changed_nodes or [])
+        ],
+        "steps": [
+            _step("handler", handler, handler_file, handler_line),
+            *[_step("followed_call", s, f, ln) for f, s, ln in calls],
+        ],
         "obligations": [],
     }
 
 
-def test_established_flow_reaching_two_files_shows_both_terminals():
+def test_unrelated_changed_symbols_never_render_under_an_unconnected_route():
+    """Regression case A (NestJS PR #3 shape): `DELETE /v1/auth/me`'s own
+    evidence only reaches `AuthController.delete` -> `AuthService.softDelete`.
+    `FilesLocalController.download` and unrelated `AuthService` methods are
+    part of the SAME diff but never called from this handler -- they must
+    never appear under this route just for having been changed elsewhere."""
     result = _base_result(
         affected_flows=[
-            _flow_with_nodes(
-                "flow:POST:/audio/speech",
-                "POST /audio/speech",
-                "create_speech",
-                [
-                    ("api/src/inference/voice_manager.py", "VoiceManager.load_voice"),
-                    ("api/src/routers/openai_compatible.py", "create_speech"),
-                    ("api/src/services/text_processing/normalizer.py", "handle_email"),
-                    ("api/src/services/text_processing/normalizer.py", "_speak_url_symbols"),
-                    ("api/src/services/text_processing/normalizer.py", "handle_url"),
-                    ("api/tests/test_normalizer.py", "test_url_www"),
+            _flow_with_steps(
+                "flow:DELETE:/v1/auth/me",
+                "DELETE /v1/auth/me",
+                "AuthController.delete",
+                ("src/auth/auth.controller.ts", 158),
+                calls=[("src/auth/auth.service.ts", "AuthService.softDelete", 40)],
+                changed_nodes=[
+                    ("src/auth/auth.controller.ts", "AuthController.delete", 158),
+                    ("src/auth/auth.service.ts", "AuthService.softDelete", 40),
+                    ("src/auth/auth.service.ts", "AuthService.logout", 55),
+                    ("src/files/files-local.controller.ts", "FilesLocalController.download", 12),
                 ],
             )
         ],
-        accepted_impacts=[{"id": "flow:POST:/audio/speech", "status": "proven"}],
-        change={"base": "main", "symbols": [], "files": [{"path": "api/tests/test_normalizer.py", "role": "test_usage_candidate"}]},
+        accepted_impacts=[{"id": "flow:DELETE:/v1/auth/me", "status": "proven"}],
     )
     out = r.render(result)
 
-    assert "**Established**" in out
-    # Both genuinely distinct changed files must show up as terminals...
-    assert "VoiceManager.load_voice" in out
-    assert "handle_url" in out
-    # ...but same-file neighbors of handle_url (its own helper/sibling) must
-    # not repeat as separate terminals -- one representative per file.
-    assert "handle_email" not in out
-    assert "_speak_url_symbols" not in out
-    # A test symbol must never appear as a "changed target".
-    assert "test_url_www" not in out
+    assert "DELETE /v1/auth/me" in out
+    assert "AuthController.delete" in out
+    assert "AuthService.softDelete" in out
+    assert "AuthService.logout" not in out
+    assert "FilesLocalController.download" not in out
+
+
+def test_canonical_handler_and_call_names_preferred_over_bare_step_symbols():
+    """Regression case B (Go simplebank PR #4 shape): the handler step's own
+    `symbol` is often bare/receiver-qualified (`server.renewAccessToken`,
+    lowercase receiver variable, not the type); `changed_nodes` at the same
+    (file, line) already carries the canonical, type-qualified spelling
+    (`Server.renewAccessToken`) and should be preferred. An unrelated
+    handler changed elsewhere in the same diff (`Server.loginUser`) must
+    not appear just because it is also in `changed_nodes`."""
+    result = _base_result(
+        affected_flows=[
+            _flow_with_steps(
+                "flow:POST:/tokens/renew_access",
+                "POST /tokens/renew_access",
+                "server.renewAccessToken",
+                ("api/token.go", 23),
+                calls=[
+                    ("api/token.go", "errorResponse", 55),
+                    ("db/sqlc/session.go", "Queries.GetSession", 12),
+                    ("token/paseto_maker.go", "JWTMaker.CreateToken", 30),
+                    ("token/paseto_maker.go", "JWTMaker.VerifyToken", 45),
+                ],
+                changed_nodes=[
+                    ("api/token.go", "Server.renewAccessToken", 23),
+                    ("api/login.go", "Server.loginUser", 10),
+                    ("api/middleware.go", "authMiddleware", 5),
+                ],
+            )
+        ],
+        accepted_impacts=[{"id": "flow:POST:/tokens/renew_access", "status": "proven"}],
+    )
+    out = r.render(result)
+
+    assert "Server.renewAccessToken" in out
+    assert "server.renewAccessToken" not in out
+    assert "Server.loginUser" not in out
+    assert "authMiddleware" not in out
 
 
 def test_single_changed_target_renders_exactly_as_before():
@@ -700,13 +774,17 @@ def test_single_changed_target_renders_exactly_as_before():
     )
     out = r.render(result)
     assert "PetService.create" in out
-    assert "more changed target" not in out
+    assert "more traced call" not in out
 
 
-def test_many_changed_files_on_one_flow_caps_terminals_and_notes_remainder():
-    nodes = [(f"src/file_{i}.py", f"symbol_{i}") for i in range(5)]
+def test_many_connected_calls_on_one_flow_caps_and_notes_remainder():
+    calls = [(f"src/file_{i}.py", f"symbol_{i}", 10 + i) for i in range(5)]
     result = _base_result(
-        affected_flows=[_flow_with_nodes("flow:a", "POST /pets", "PetController.create", nodes)],
+        affected_flows=[
+            _flow_with_steps(
+                "flow:a", "POST /pets", "PetController.create", ("src/pet_controller.py", 1), calls
+            )
+        ],
         accepted_impacts=[{"id": "flow:a", "status": "proven"}],
     )
     out = r.render(result)
@@ -714,7 +792,27 @@ def test_many_changed_files_on_one_flow_caps_terminals_and_notes_remainder():
         assert f"symbol_{i}" in out
     for i in range(r._MAX_FLOW_TERMINALS, 5):
         assert f"symbol_{i}" not in out
-    assert f"+{5 - r._MAX_FLOW_TERMINALS} more changed target(s)" in out
+    assert f"+{5 - r._MAX_FLOW_TERMINALS} more traced call(s)" in out
+
+
+def test_route_with_no_deeper_connectivity_renders_cleanly_as_route_to_handler():
+    """Section 7 fallback: when a flow's `steps` contain nothing beyond the
+    handler itself, the renderer must stop there -- route -> handler,
+    nothing padded on, nothing fabricated."""
+    result = _base_result(
+        affected_flows=[
+            _flow_with_steps(
+                "flow:a", "POST /pets", "PetController.create", ("src/pet_controller.py", 1), calls=[]
+            )
+        ],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    assert "POST /pets" in out
+    assert "PetController.create" in out
+    assert "also touches" not in out
+    assert "handler also calls" not in out
+    assert "more traced call" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -723,30 +821,24 @@ def test_many_changed_files_on_one_flow_caps_terminals_and_notes_remainder():
 
 
 # ---------------------------------------------------------------------------
-# TRUE CONNECTED PATH vs. AFFECTED/FAN-OUT TARGETS: a flow reaching changed
-# symbols in more than one file must not render as if route -> handler ->
-# terminal_a -> terminal_b were one proven causal sequence. `changed_nodes`
-# is the whole diff's changed-symbol set attached to every flow alike, not
-# per-flow reachability -- terminal_a and terminal_b are not thereby
-# connected to each other, or necessarily to this specific route, in that
-# order. Confirmed against a real run (sydes-examples/realworld-axum-sqlx
-# PR #3): every one of 12 unrelated routes' flows carried the identical
-# 22-symbol changed_nodes list, and the old renderer chained up to
-# `_MAX_FLOW_TERMINALS` of them onto the route/handler with `→`, implying a
-# call sequence that was never established.
+# TRUE CONNECTED PATH vs. PROVEN FAN-OUT: a handler shown calling more than
+# one thing must not render as if route -> handler -> call_a -> call_b were
+# one proven causal SEQUENCE. Sydes proves "the handler calls each of
+# these", not an order between them.
 # ---------------------------------------------------------------------------
 
 
-def test_multiple_fanout_terminals_are_not_chained_as_a_sequence():
+def test_multiple_connected_calls_are_not_chained_as_a_sequence():
     result = _base_result(
         affected_flows=[
-            _flow_with_nodes(
+            _flow_with_steps(
                 "flow:GET:/api/articles/feed",
                 "GET /api/articles/feed",
                 "feed_articles",
-                [
-                    ("src/http/articles/comments.rs", "add_comment"),
-                    ("src/http/articles/mod.rs", "create_article"),
+                ("src/http/articles/feed.rs", 1),
+                calls=[
+                    ("src/http/articles/comments.rs", "add_comment", 20),
+                    ("src/http/articles/mod.rs", "create_article", 30),
                 ],
             )
         ],
@@ -757,7 +849,7 @@ def test_multiple_fanout_terminals_are_not_chained_as_a_sequence():
     # The true, established hop still renders as a connected arrow chain.
     assert "GET /api/articles/feed" in out
     assert "  → feed_articles" in out
-    # The fan-out terminals must both still be visible ...
+    # Both proven calls must still be visible ...
     assert "add_comment" in out
     assert "create_article" in out
     # ... but never as if chained onto the route/handler as further hops:
@@ -765,13 +857,57 @@ def test_multiple_fanout_terminals_are_not_chained_as_a_sequence():
     assert "→ add_comment" not in out
     assert "→ create_article" not in out
     # Rendered instead as an explicit, unordered set.
-    assert "also touches: {add_comment, create_article}" in out
+    assert "handler also calls: {add_comment, create_article}" in out
 
 
-def test_single_fanout_terminal_still_reads_as_one_established_hop():
-    """The common, narrower case (exactly one changed-target terminal) is
-    unaffected by the fan-out fix -- still one hop past the handler, still
-    no set notation for a single item."""
+def test_global_changed_nodes_not_auto_rendered_under_every_unrelated_flow():
+    """Confirmed against a real run (sydes-examples/realworld-axum-sqlx
+    PR #3): every one of 12 unrelated routes' flows carried the identical
+    whole-diff `changed_nodes` list. Two routes here share the same
+    `changed_nodes`, but each has its OWN, disjoint set of proven calls --
+    neither route's rendering may leak the other's changed symbol."""
+    shared_changed = [
+        ("src/http/articles/comments.rs", "add_comment", 20),
+        ("src/http/users/mod.rs", "update_user", 40),
+    ]
+    result = _base_result(
+        affected_flows=[
+            _flow_with_steps(
+                "flow:a", "POST /comments", "CommentController.create",
+                ("src/http/articles/comments.rs", 1),
+                calls=[("src/http/articles/comments.rs", "add_comment", 20)],
+                changed_nodes=shared_changed,
+            ),
+            _flow_with_steps(
+                "flow:b", "PUT /users", "UserController.update",
+                ("src/http/users/mod.rs", 1),
+                calls=[("src/http/users/mod.rs", "update_user", 40)],
+                changed_nodes=shared_changed,
+            ),
+        ],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}, {"id": "flow:b", "status": "proven"}],
+    )
+    out = r.render(result)
+
+    # Split each flow's block out and check the other flow's proven call
+    # never leaks into it. Search from "**Established**" onward -- the
+    # route label also appears earlier, in the Area summary table.
+    established = out[out.index("**Established**"):]
+    comments_idx = established.index("POST /comments")
+    users_idx = established.index("PUT /users")
+    out = established
+    comments_block = out[comments_idx:users_idx] if comments_idx < users_idx else out[comments_idx:]
+    users_block = out[users_idx:comments_idx] if users_idx < comments_idx else out[users_idx:]
+    assert "add_comment" in comments_block
+    assert "update_user" not in comments_block
+    assert "update_user" in users_block
+    assert "add_comment" not in users_block
+
+
+def test_single_connected_call_still_reads_as_one_established_hop():
+    """The common, narrower case (exactly one proven call) is unaffected --
+    still one hop past the handler, still no set notation for a single
+    item."""
     result = _base_result(
         affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
         accepted_impacts=[{"id": "flow:a", "status": "proven"}],
@@ -779,6 +915,7 @@ def test_single_fanout_terminal_still_reads_as_one_established_hop():
     out = r.render(result)
     assert "  → PetService.create" in out
     assert "also touches" not in out
+    assert "handler also calls" not in out
 
 
 def test_footer_has_exactly_one_link_to_the_run():
