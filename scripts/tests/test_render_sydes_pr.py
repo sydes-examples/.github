@@ -45,7 +45,11 @@ def _make_flow(flow_id: str, entry_label: str, handler: str, symbol: str, obliga
     }
 
 
-def _make_obligation(kind: str, statement: str, status: str = "unverified", introduced: bool = False) -> dict:
+def _make_obligation(
+    kind: str, statement: str, status: str = "unverified", introduced: bool = False,
+    reason: str | None = None, mapped_tests: list[dict] | None = None,
+    supporting_tests: list[dict] | None = None,
+) -> dict:
     return {
         "id": f"ob:{statement[:10]}",
         "flow_id": "flow:x",
@@ -54,6 +58,19 @@ def _make_obligation(kind: str, statement: str, status: str = "unverified", intr
         "origin": "test_matrix",
         "introduced_by_change": introduced,
         "status": status,
+        "reason": reason,
+        "mapped_tests": mapped_tests or [],
+        "supporting_tests": supporting_tests or [],
+    }
+
+
+def _make_test(file: str, case_name: str, evidence_tier: str) -> dict:
+    return {
+        "id": f"{file}::{case_name}",
+        "name": case_name,
+        "case_name": case_name,
+        "file": file,
+        "evidence_tier": evidence_tier,
     }
 
 
@@ -170,7 +187,10 @@ def test_many_likely_paths_are_truncated_deterministically():
 def test_no_mapped_tests_says_none_not_zero_confusingly():
     result = _load("real_inferred_only_no_tests.json")
     out = r.render(result)
-    assert "| Relevant tests | None identified |" in out
+    # No named test evidence and no aggregate signal either -- the whole
+    # "Existing evidence" section is correctly omitted rather than shown
+    # with a hollow "None identified" line.
+    assert "### Existing evidence" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +222,10 @@ def test_supporting_evidence_is_shown_instead_of_none_identified():
         },
     )
     out = r.render(result)
-    assert "| Relevant tests | None identified |" not in out
-    row = [line for line in out.splitlines() if line.startswith("| Relevant tests |")][0]
-    assert "5" in row
-    assert "none directly verify" in row
+    section = out.split("### Existing evidence")[1].split("###")[0]
+    assert "None identified" not in section
+    assert "5" in section
+    assert "none directly verify" in section
     # Real evidence exists somewhere, but none of it verifies the changed
     # behavior directly -- the before-merge nudge should still fire.
     assert "- Add or run a test covering the affected behavior before merging." in out
@@ -229,8 +249,8 @@ def test_verifying_tests_shown_as_the_primary_count():
         },
     )
     out = r.render(result)
-    row = [line for line in out.splitlines() if line.startswith("| Relevant tests |")][0]
-    assert "2 directly verify the changed behavior" in row
+    section = out.split("### Existing evidence")[1].split("###")[0]
+    assert "2 directly verify the changed behavior" in section
     # Real verifying evidence found -- the before-merge nudge must not fire.
     assert "- Add or run a test covering the affected behavior before merging." not in out
 
@@ -243,12 +263,17 @@ def test_verifying_tests_shown_as_the_primary_count():
 def test_tests_identified_not_executed_reads_as_intentional():
     result = _load("real_established_many_tests.json")
     out = r.render(result)
-    assert re.search(r"\| Relevant tests \| \d+ directly verify the changed behavior", out)
-    assert "| Tests executed by Sydes | Not run |" in out
-    # Must never look like a failure -- no failure-shaped words near it.
-    verification_section = out.split("### Verification")[1].split("###")[0]
-    assert "fail" not in verification_section.lower()
-    assert "error" not in verification_section.lower()
+    assert re.search(r"\d+ directly verify the changed behavior", out)
+    # Execution is explicit and distinct from the verification categories --
+    # this workflow's --no-run-tests must read as a deliberate config
+    # choice, not a failure.
+    assert (
+        "**Tests executed by Sydes:** No — test execution is disabled in this workflow (`--no-run-tests`)."
+        in out
+    )
+    execution_section = out.split("### Execution")[1].split("###")[0]
+    assert "fail" not in execution_section.lower()
+    assert "error" not in execution_section.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +285,7 @@ def test_review_completed_zero_findings():
     result = _base_result(code_review_status="completed", code_findings=[])
     out = r.render(result)
     assert "### Code review" in out
-    assert "No findings." in out
+    assert "**No blocking issues found**" in out
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +317,12 @@ def test_review_findings_present_summarized_not_dumped():
 def test_review_unavailable_is_explicit_not_no_findings():
     result = _load("real_review_unavailable.json")
     out = r.render(result)
-    assert "Code review unavailable" in out
-    assert "No findings." not in out
+    # The real, actionable reason (already in diagnostics) is surfaced
+    # instead of the old generic "the provider could not complete the
+    # analysis" sentence.
+    assert "AI code review unavailable: OpenAI provider selected, but OPENAI_API_KEY is not set." in out
+    assert "the provider could not complete the analysis" not in out
+    assert "No blocking issues found" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +598,7 @@ def test_verification_shows_category_not_raw_statement():
         accepted_impacts=[{"id": "flow:a", "status": "proven"}],
     )
     out = r.render(result)
-    assert "| Validation behavior | Not fully traced |" in out
+    assert "- **Validation behavior:**" in out
     assert "unusual-marker-xyz" not in out
     assert statement not in out
 
@@ -839,6 +868,182 @@ def test_flow_without_matching_impact_defaults_proven_only_when_flow_itself_says
     )
     out = r.render(result)
     assert "**Established**" in out
+
+
+# ---------------------------------------------------------------------------
+# Product output + evidence correction pass (sydes-examples/nestjs-
+# boilerplate PR #3 as the reference case): named existing evidence,
+# explicit execution, per-category "why unverified" reasoning, and
+# non-defect PR-semantic-analysis observations surfaced honestly.
+# ---------------------------------------------------------------------------
+
+
+def test_existing_evidence_names_the_real_test_with_tier_and_execution():
+    """Reproduces the JAVA-1 case: a real, changed test directly verifying
+    a route-contract obligation must be named, not just counted."""
+    result = _base_result(
+        affected_flows=[
+            _make_flow(
+                "flow:a", "PUT /articles/{slug}", "updateArticle", "ArticleCommandService.update",
+                obligations=[
+                    _make_obligation(
+                        "route_contract", "PUT /articles/{slug} responds 200", status="unknown",
+                        reason="Test execution was disabled (--no-run-tests)",
+                        mapped_tests=[_make_test("src/test/ArticleApiTest.java", "should_update_article_content_success", "A_direct_route_exercise")],
+                    )
+                ],
+            )
+        ],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        summary={
+            "verdict": "VERIFICATION INCOMPLETE", "risk": "MEDIUM",
+            "counts": {
+                "mapped_tests": 1, "tests_executed": 0,
+                "tests_exercising_flows": 1, "tests_supporting_behavior": 0, "tests_verifying_behavior": 1,
+            },
+        },
+    )
+    out = r.render(result)
+    section = out.split("### Existing evidence")[1].split("###")[0]
+    assert "`ArticleApiTest.java::should_update_article_content_success`" in section
+    assert "Directly covers: PUT /articles/{slug}" in section
+    assert "Execution: not run by Sydes" in section
+
+
+def test_execution_section_states_explicitly_whether_sydes_ran_tests():
+    result = _base_result(notes=["test_execution=skipped reason=--no-run-tests"])
+    out = r.render(result)
+    assert (
+        "### Execution\n\n**Tests executed by Sydes:** No — test execution is disabled in this "
+        "workflow (`--no-run-tests`)."
+    ) in out
+
+
+def test_execution_section_reports_a_real_run_count():
+    result = _base_result(summary={
+        "verdict": "VERIFIED", "risk": "LOW", "counts": {"mapped_tests": 0, "tests_executed": 5},
+    })
+    out = r.render(result)
+    assert "**Tests executed by Sydes:** Yes — 5 test(s) run." in out
+
+
+def test_still_unverified_distinguishes_no_test_found_from_test_not_executed():
+    """The exact ambiguity flagged as a real problem: two very different
+    obligations must never collapse into the same "Not yet run" text."""
+    result = _base_result(
+        affected_flows=[
+            _make_flow(
+                "flow:a", "POST /v1/auth/logout", "logout", "AuthService.logout",
+                obligations=[
+                    _make_obligation(
+                        "route_contract", "POST /v1/auth/logout responds 204", status="unknown",
+                        reason="Test execution was disabled (--no-run-tests)",
+                        mapped_tests=[_make_test("auth.e2e-spec.ts", "should logout", "A_direct_route_exercise")],
+                    ),
+                    _make_obligation(
+                        "validation", "rejects missing Authorization header", status="unverified",
+                        reason="No existing test asserts this behavior",
+                    ),
+                ],
+            )
+        ],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    section = out.split("### Still unverified")[1].split("###")[0]
+    assert "**API behavior:** a relevant test exists but was not executed by Sydes" in section
+    assert "**Validation behavior:** no relevant test found" in section
+
+
+def test_still_unverified_reports_a_genuine_failure_distinctly():
+    result = _base_result(
+        affected_flows=[
+            _make_flow(
+                "flow:a", "POST /login", "login", "AuthService.login",
+                obligations=[
+                    _make_obligation(
+                        "route_contract", "POST /login responds 200", status="failed",
+                        reason="`should_login` failed in the repository test suite",
+                        mapped_tests=[_make_test("auth.e2e-spec.ts", "should_login", "A_direct_route_exercise")],
+                    ),
+                ],
+            )
+        ],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    section = out.split("### Still unverified")[1].split("###")[0]
+    assert "verification FAILED — `should_login` failed in the repository test suite" in section
+
+
+def test_verified_category_shown_separately_from_still_unverified():
+    result = _base_result(
+        affected_flows=[
+            _make_flow(
+                "flow:a", "GET /pets", "list", "PetService.list",
+                obligations=[
+                    _make_obligation(
+                        "route_contract", "GET /pets responds 200", status="passed",
+                        mapped_tests=[_make_test("pets.e2e-spec.ts", "should_list_pets", "A_direct_route_exercise")],
+                    ),
+                ],
+            )
+        ],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+    )
+    out = r.render(result)
+    assert "### Verified" in out
+    assert "- API behavior" in out
+    assert "### Still unverified" not in out
+
+
+def test_notable_observations_surface_pr_semantic_local_risks_not_as_findings():
+    """`pr_semantic_analysis.local_risks` are evidence-cited hypotheses
+    about the change, not code-review defects -- shown under a distinctly
+    labeled, non-defect heading, and only when the review itself found no
+    blocking issues."""
+    result = _base_result(
+        code_review_status="completed",
+        code_findings=[],
+        pr_semantic_analysis={
+            "local_risks": [
+                {
+                    "description": "AuthService.logout now expects a JwtPayloadType-based sessionId instead of a refresh-payload-based one.",
+                    "citations": [{"file": "src/auth/auth.service.ts", "line": 538}],
+                }
+            ]
+        },
+    )
+    out = r.render(result)
+    section = out.split("### Code review")[1].split("---")[0]
+    assert "**No blocking issues found**" in section
+    assert "**Notable observations**" in section
+    assert "JwtPayloadType-based sessionId" in section
+    assert "(src/auth/auth.service.ts:538)" in section
+
+
+def test_notable_observations_omitted_when_no_local_risks_exist():
+    result = _base_result(code_review_status="completed", code_findings=[])
+    out = r.render(result)
+    assert "**Notable observations**" not in out
+
+
+def test_coverage_limits_surfaces_the_unresolved_route_prefix_diagnostic():
+    """The exact case that hid why relevant-looking tests were not mapped:
+    Sydes already computes this diagnostic (see
+    verify/test_mapping.py::_route_prefix_mismatch) -- it just wasn't shown."""
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "GET /v1/auth/me", "me", "AuthService.me")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        diagnostics=[
+            "possible missing route prefix: flow path '/v1/auth/me' looks like a suffix of "
+            "'/api/v1/auth/me' used in test/user/auth.e2e-spec.ts:136 -- route composition was "
+            "not fixed here, so this was not used to map any test",
+        ],
+    )
+    out = r.render(result)
+    section = out.split("### Coverage limits")[1].split("###")[0] if "### Coverage limits" in out else ""
+    assert "Tests reference `/api/v1/auth/me`, which may be `/v1/auth/me`" in section
 
 
 def test_main_result_unavailable_path(tmp_path):

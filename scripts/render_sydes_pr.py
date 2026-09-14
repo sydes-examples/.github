@@ -84,13 +84,6 @@ _OBLIGATION_CATEGORY_ORDER = [
     "event_emission",
 ]
 
-_OBLIGATION_STATUS_LABEL = {
-    "passed": "Verified",
-    "failed": "Failed",
-    "unverified": "Not yet run",
-    "unknown": "Not fully traced",
-}
-
 #: When a category has more than one obligation, show the worst status
 #: across the group (a reviewer needs to know the worst case, not an
 #: arbitrary one) -- lower rank wins.
@@ -240,13 +233,23 @@ _RAW_IDENTIFIER_LABEL_RE = re.compile(r"[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+){3,}$")
 
 
 def _boundary_display_label(boundary: dict[str, Any]) -> str:
-    label = _clean(_get(boundary, "label", default=""), limit=90)
-    if label and not _RAW_IDENTIFIER_LABEL_RE.match(label.replace(" ", "")):
-        return label
+    # Raw-identifier detection MUST run before truncation: `_clean` cuts a
+    # long label at a hard character limit and appends "…", and a truncated
+    # string can never match `_RAW_IDENTIFIER_LABEL_RE` (which requires the
+    # string to *end* in a clean dotted segment) -- so checking the already-
+    # truncated text let a raw CBM-style identifier like
+    # "home-runner-work-nestjs-boilerplate-nestjs-boilerplate.src.utils.
+    # deep-resolver.deepResolvePromises" through as "…deepResolv…" instead
+    # of falling back to the boundary's own clean `symbol` field, exactly as
+    # this safeguard was meant to prevent (confirmed on a real render:
+    # sydes-examples/nestjs-boilerplate PR #3).
+    raw_label = str(_get(boundary, "label", default="") or "").strip()
+    if raw_label and not _RAW_IDENTIFIER_LABEL_RE.match(raw_label.replace(" ", "")):
+        return _clean(raw_label, limit=90)
     symbol = str(_get(boundary, "symbol", default="") or "").strip()
     if symbol:
         return f"`{symbol}`"
-    return label or "Affected"
+    return _clean(raw_label, limit=90) or "Affected"
 
 
 def _impact_status_by_id(result: dict[str, Any]) -> dict[str, str]:
@@ -565,7 +568,7 @@ def select_representative_paths(
 def render_system_impact(result: dict[str, Any], lines: list[str]) -> None:
     """The section a reviewer actually needs: what area of the system this
     reaches, and through what logical path -- not aggregate counts."""
-    lines.append("### System impact")
+    lines.append("### Affected paths")
     lines.append("")
 
     area_rows = summarize_system_impact_areas(result)
@@ -730,17 +733,156 @@ def _relevant_tests_row(counts: dict[str, Any]) -> str:
     return f"{exercising} test(s) exercise the affected flow(s); none assert the changed behavior"
 
 
+#: Human-legible name for a test's own evidence tier -- what it actually
+#: demonstrates about the route it was matched to, not an internal code.
+_TIER_COVERAGE_VERB = {
+    "A_direct_route_exercise": "Directly covers",
+    "A_direct_invocation": "Directly covers",
+    "B_asserted_effect": "Supports",
+    "C_declared": "Exercises (no assertion on this specific behavior)",
+}
+
+_MAX_EXISTING_EVIDENCE = 4
+
+
+def _obligation_execution_note(status: str) -> str:
+    if status == "passed":
+        return "passed"
+    if status == "failed":
+        return "failed"
+    return "not run by Sydes"
+
+
+def _named_test_entries(result: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+    """Real, named test evidence pulled directly from `mapped_tests`/
+    `supporting_tests` on each obligation -- never a new analysis pass, just
+    reading data Sydes already computed. Deduplicated by (file, case) since
+    the same test can be attached to more than one obligation on a flow.
+    Returns (test_label, coverage_verb, route_label, execution_note) tuples.
+    """
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for flow in _as_list(_get(result, "affected_flows", default=[])):
+        route = str(_get(flow, "entry_label", default="")).strip()
+        for obligation in _as_list(_get(flow, "obligations", default=[])):
+            status = str(_get(obligation, "status", default=""))
+            tests = _as_list(_get(obligation, "mapped_tests", default=[])) + _as_list(
+                _get(obligation, "supporting_tests", default=[])
+            )
+            for test in tests:
+                file = str(_get(test, "file", default="") or "")
+                case = str(_get(test, "case_name", default="") or _get(test, "name", default="") or "")
+                if not file or not case:
+                    continue
+                key = (file, case)
+                if key in seen:
+                    continue
+                seen.add(key)
+                tier = str(_get(test, "evidence_tier", default=""))
+                verb = _TIER_COVERAGE_VERB.get(tier, "Relates to")
+                file_name = file.rsplit("/", 1)[-1]
+                entries.append((f"`{file_name}::{case}`", verb, route, _obligation_execution_note(status)))
+    return entries
+
+
+def render_existing_evidence(result: dict[str, Any], lines: list[str]) -> None:
+    """Named test evidence, not just an aggregate count -- "2 tests verify
+    this" tells a reviewer nothing they can act on; naming the test does.
+    Execution status is shown per test because a test being *mapped* is not
+    the same claim as it having been *run* -- see `render_execution`."""
+    counts = _get(result, "summary", "counts", default={})
+    summary = _relevant_tests_row(counts)
+    entries = _named_test_entries(result)
+    if not entries and summary == "None identified":
+        return
+
+    lines.append("### Existing evidence")
+    lines.append("")
+    lines.append(summary)
+    lines.append("")
+    for label, verb, route, execution in entries[:_MAX_EXISTING_EVIDENCE]:
+        lines.append(f"- {label}")
+        if route:
+            lines.append(f"  {verb}: {route}")
+        lines.append(f"  Execution: {execution}")
+    if len(entries) > _MAX_EXISTING_EVIDENCE:
+        lines.append(f"_…and {len(entries) - _MAX_EXISTING_EVIDENCE} more mapped test(s) in the full result._")
+    lines.append("")
+
+
+# ---------------------------------------------------------------------------
+# Execution -- explicit and separate from verification status. Whether a
+# test was *mapped* to an obligation and whether Sydes *ran* it are
+# different claims; folding "not run" into the same status word as "no test
+# found" is exactly the ambiguity a reviewer cannot resolve from the comment
+# alone (see `render_verification`'s docstring).
+# ---------------------------------------------------------------------------
+
+
+def render_execution(result: dict[str, Any], lines: list[str]) -> None:
+    counts = _get(result, "summary", "counts", default={})
+    executed = counts.get("tests_executed", 0)
+
+    lines.append("### Execution")
+    lines.append("")
+    if executed:
+        lines.append(f"**Tests executed by Sydes:** Yes — {executed} test(s) run.")
+    else:
+        disabled = any(
+            "no-run-tests" in str(note) for note in _as_list(_get(result, "notes", default=[]))
+        )
+        if disabled:
+            lines.append(
+                "**Tests executed by Sydes:** No — test execution is disabled in this workflow (`--no-run-tests`)."
+            )
+        else:
+            lines.append("**Tests executed by Sydes:** No.")
+    lines.append("")
+
+
+# ---------------------------------------------------------------------------
+# Still unverified -- one strict meaning throughout: Sydes does not have
+# enough EXECUTED evidence to call this behavior verified. Never conflated
+# with "no test exists" or "no test was found" -- each row says which one it
+# actually is, read from the obligation's own `reason` (already computed;
+# see `resolve_obligation_status` and its `--no-run-tests` override in
+# `verify/analyzer.py`), not re-derived here.
+# ---------------------------------------------------------------------------
+
+_STILL_UNVERIFIED_HEADER = (
+    "Sydes does not currently have enough executed evidence to claim these "
+    "behaviors are verified."
+)
+
+
+def _unverified_reason_phrase(obligation: dict[str, Any]) -> str:
+    status = str(_get(obligation, "status", default=""))
+    reason = str(_get(obligation, "reason", default="") or "").strip()
+    lowered = reason.lower()
+    if status == "failed":
+        return f"verification FAILED — {reason}" if reason else "verification failed"
+    if "no-run-tests" in lowered or "was not executed" in lowered:
+        return "a relevant test exists but was not executed by Sydes"
+    if "no existing test asserts" in lowered:
+        return "no relevant test found"
+    if "exercise this flow but none assert" in lowered:
+        return "a test exercises this flow but does not assert this specific behavior"
+    if "could not be executed" in lowered or "without attributable" in lowered:
+        return "the test suite could not be executed"
+    if reason:
+        return reason[0].lower() + reason[1:] if len(reason) > 1 else reason.lower()
+    return "impact path incomplete or verification evidence insufficient"
+
+
 def render_verification(result: dict[str, Any], lines: list[str]) -> None:
-    """Human questions/status, not internal counters -- and never a raw
-    obligation statement (empirically, real statements are inconsistent
+    """Obligations are grouped into a handful of fixed categories, one
+    row per category, using the worst status in that category -- never a
+    raw obligation statement (empirically, real statements are inconsistent
     enough across kinds -- code fragments, boilerplate, genuine prose --
     that showing them verbatim reads as internal, not reviewer-facing; see
-    the module-level obligation-filtering notes above). Obligations are
-    grouped into a handful of fixed categories instead, one row per
-    category, using the worst status in that category. Rows are only added
-    when the data supports them -- an empty checklist with just the two
-    always-known test lines is a correct, honest render, not a bug."""
-    counts = _get(result, "summary", "counts", default={})
+    the module-level obligation-filtering notes above). A category that IS
+    fully verified is called out separately and positively, never buried in
+    the same list as what still needs evidence."""
     meaningful = _meaningful_obligations(result)
     by_category: dict[str, list[dict[str, Any]]] = {}
     for obligation in meaningful:
@@ -748,30 +890,41 @@ def render_verification(result: dict[str, Any], lines: list[str]) -> None:
         if kind in _OBLIGATION_CATEGORY_LABEL:
             by_category.setdefault(kind, []).append(obligation)
 
-    lines.append("### Verification")
-    lines.append("")
-    lines.append("| Area | Status |")
-    lines.append("| --- | --- |")
-    rows_emitted = 0
+    if not by_category:
+        return
+
+    verified_categories: list[str] = []
+    unverified_rows: list[tuple[str, str]] = []
     for kind in _OBLIGATION_CATEGORY_ORDER:
         items = by_category.get(kind)
-        if not items or rows_emitted >= _MAX_CHECKLIST_ROWS:
+        if not items:
             continue
         worst = min(
             items, key=lambda o: _OBLIGATION_STATUS_RANK.get(str(_get(o, "status", default="")), 2)
         )
-        status = _OBLIGATION_STATUS_LABEL.get(str(_get(worst, "status", default="")), "Not fully traced")
-        lines.append(f"| {_OBLIGATION_CATEGORY_LABEL[kind]} | {status} |")
-        rows_emitted += 1
+        label = _OBLIGATION_CATEGORY_LABEL[kind]
+        if str(_get(worst, "status", default="")) == "passed":
+            verified_categories.append(label)
+        else:
+            unverified_rows.append((label, _unverified_reason_phrase(worst)))
+        if len(verified_categories) + len(unverified_rows) >= _MAX_CHECKLIST_ROWS:
+            break
 
-    lines.append(f"| Relevant tests | {_relevant_tests_row(counts)} |")
+    if verified_categories:
+        lines.append("### Verified")
+        lines.append("")
+        for label in verified_categories:
+            lines.append(f"- {label}")
+        lines.append("")
 
-    executed = counts.get("tests_executed", 0)
-    # "Not run" is a deliberate, quiet phrasing for the common --no-run-tests
-    # case -- it must never read as a failure.
-    executed_label = "Not run" if executed == 0 else f"{executed} run"
-    lines.append(f"| Tests executed by Sydes | {executed_label} |")
-    lines.append("")
+    if unverified_rows:
+        lines.append("### Still unverified")
+        lines.append("")
+        lines.append(f"_{_STILL_UNVERIFIED_HEADER}_")
+        lines.append("")
+        for label, phrase in unverified_rows:
+            lines.append(f"- **{label}:** {phrase}")
+        lines.append("")
 
 
 # ---------------------------------------------------------------------------
@@ -826,6 +979,50 @@ def render_before_merge(result: dict[str, Any], lines: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _diagnostic_first_line(result: dict[str, Any], prefix: str) -> str:
+    """The first line of the one diagnostic starting with `prefix`, if any --
+    e.g. `code_review_unavailable: OpenAI provider selected, but
+    OPENAI_API_KEY is not set.` A diagnostic's own remediation instructions
+    (an `export ...` line, an alternate `--model` suggestion) that follow on
+    later lines are written for an operator's terminal, not a PR comment, so
+    only the first line is ever surfaced here."""
+    for note in _as_list(_get(result, "diagnostics", default=[])):
+        text = str(note)
+        if text.startswith(prefix):
+            first_line = text.split("\n", 1)[0]
+            return first_line[len(prefix):].strip()
+    return ""
+
+
+#: `pr_semantic_analysis.local_risks` are LLM-hypothesized, evidence-cited
+#: risk notes about the CHANGE itself (not correctness defects a code-review
+#: pass would flag) -- e.g. "this signature change could break an unseen
+#: caller". Never conflated with `code_findings` (real review output): a
+#: local risk is a "worth double-checking" observation, a finding is a
+#: reviewed defect. Both can be shown, but under different, honestly-labeled
+#: headings, and neither is ever invented here -- only surfaced from data
+#: Sydes already produced.
+_MAX_NOTABLE_OBSERVATIONS = 3
+
+
+def _notable_observations(result: dict[str, Any]) -> list[str]:
+    risks = _as_list(_get(result, "pr_semantic_analysis", "local_risks", default=[]))
+    out: list[str] = []
+    for risk in risks[:_MAX_NOTABLE_OBSERVATIONS]:
+        description = _clean(_get(risk, "description", default=""), limit=220)
+        if not description:
+            continue
+        citations = _as_list(_get(risk, "citations", default=[]))
+        location = ""
+        if citations:
+            file = _get(citations[0], "file", default="")
+            line = _get(citations[0], "line", default="")
+            if file:
+                location = f" ({file}:{line})" if line else f" ({file})"
+        out.append(f"{description}{location}")
+    return out
+
+
 def render_review(result: dict[str, Any], lines: list[str]) -> None:
     """`code_findings` being empty means something different depending on
     `code_review_status` -- the pass never ran, it ran and failed, or it
@@ -846,13 +1043,24 @@ def render_review(result: dict[str, Any], lines: list[str]) -> None:
     lines.append("")
 
     if status == "unavailable":
-        lines.append("Code review unavailable — the provider could not complete the analysis.")
+        reason = _diagnostic_first_line(result, "code_review_unavailable:")
+        if reason:
+            lines.append(f"AI code review unavailable: {reason}")
+        else:
+            lines.append("Code review unavailable — the provider could not complete the analysis.")
         lines.append("")
         return
 
     if not findings:
-        lines.append("No findings.")
+        lines.append("**No blocking issues found**")
         lines.append("")
+        observations = _notable_observations(result)
+        if observations:
+            lines.append("**Notable observations**")
+            lines.append("")
+            for observation in observations:
+                lines.append(f"- {observation}")
+            lines.append("")
         return
 
     severities = [str(_get(f, "severity", default="P3")) for f in findings]
@@ -873,34 +1081,57 @@ def render_review(result: dict[str, Any], lines: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def render_details(result: dict[str, Any], lines: list[str]) -> None:
-    body: list[str] = []
+#: Reads the already-computed "possible missing route prefix" diagnostic
+#: (see verify/test_mapping.py::_route_prefix_mismatch) -- Sydes found
+#: tests using a prefixed path that may be this exact route, but declined
+#: to map them without source/config evidence the prefix is real. Never
+#: guessed at here either: this only surfaces what Sydes already refused to
+#: assume, so a reviewer can see why relevant-looking tests did not count
+#: as evidence.
+_ROUTE_PREFIX_NOTE_RE = re.compile(
+    r"possible missing route prefix: flow path '([^']+)' looks like a suffix of '([^']+)'"
+)
 
-    symbols = _as_list(_get(result, "change", "symbols", default=[]))
-    test_paths = _test_file_paths(result)
-    production_symbols = [
-        s for s in symbols if str(_get(s, "file", default="")) not in test_paths
-    ]
-    if production_symbols:
-        names = [str(_get(s, "name", default="")) for s in production_symbols[:_MAX_DETAIL_SYMBOLS] if _get(s, "name", default="")]
-        if names:
-            more = len(production_symbols) - len(names)
-            line = "**Changed symbols:** " + ", ".join(f"`{n}`" for n in names)
-            if more > 0:
-                line += f" (+{more} more)"
-            body.append(line)
+
+def _route_prefix_notes(result: dict[str, Any]) -> list[str]:
+    seen: set[tuple[str, str]] = set()
+    notes: list[str] = []
+    for note in _as_list(_get(result, "diagnostics", default=[])):
+        match = _ROUTE_PREFIX_NOTE_RE.search(str(note))
+        if not match:
+            continue
+        flow_path, prefixed_path = match.group(1), match.group(2)
+        key = (flow_path, prefixed_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        notes.append(
+            f"Tests reference `{prefixed_path}`, which may be `{flow_path}` with an unresolved "
+            "prefix; not used to map any test without source/config confirmation."
+        )
+    return notes
+
+
+def render_coverage_limits(result: dict[str, Any], lines: list[str]) -> None:
+    """Developer-relevant limits only -- never a raw internal diagnostics
+    dump. Visible (not collapsed behind a click): a reviewer deciding
+    whether to trust "Still unverified" above needs to see why in the same
+    glance."""
+    body: list[str] = []
 
     coverage_note = _pick_analysis_note(result, limit=200)
     if coverage_note:
         # A coverage-limit note is a global, repository-wide caveat (e.g.
         # "route composition is unresolved ... some routes may be
-        # missing"), never a claim about the specific path(s) just shown
-        # above -- when one was established, label it as scoped to the
-        # REST of the repository so it cannot read as "the path shown here
-        # is itself unresolved".
+        # missing"), never a claim about the specific path(s) shown in
+        # Affected paths above -- when one was established, label it as
+        # scoped to the REST of the repository so it cannot read as "the
+        # path shown here is itself unresolved".
         established_routes, _likely_routes = _flow_routes_by_status(result, _impact_status_by_id(result))
         label = "Other coverage limits" if established_routes else "Coverage limit"
         body.append(f"**{label}:** {coverage_note}")
+
+    body.extend(_route_prefix_notes(result))
 
     # Same "tied to the change, not just present in the repo" bar as the
     # top-level Infrastructure row (see `_infrastructure_row`) -- a
@@ -915,10 +1146,36 @@ def render_details(result: dict[str, Any], lines: list[str]) -> None:
     if not body:
         return
 
-    lines.append("<details><summary>Technical evidence</summary>")
+    lines.append("### Coverage limits")
     lines.append("")
     for item in body:
         lines.append(f"- {item}")
+    lines.append("")
+
+
+def render_details(result: dict[str, Any], lines: list[str]) -> None:
+    """A tiny, deliberately sparse <details> block: changed-symbol grounding
+    only. Coverage limits live in their own visible section (see
+    `render_coverage_limits`) -- they are a reviewer-facing caveat, not
+    internal evidence to hide behind an extra click."""
+    symbols = _as_list(_get(result, "change", "symbols", default=[]))
+    test_paths = _test_file_paths(result)
+    production_symbols = [
+        s for s in symbols if str(_get(s, "file", default="")) not in test_paths
+    ]
+    if not production_symbols:
+        return
+    names = [str(_get(s, "name", default="")) for s in production_symbols[:_MAX_DETAIL_SYMBOLS] if _get(s, "name", default="")]
+    if not names:
+        return
+    more = len(production_symbols) - len(names)
+    line = "**Changed symbols:** " + ", ".join(f"`{n}`" for n in names)
+    if more > 0:
+        line += f" (+{more} more)"
+
+    lines.append("<details><summary>Technical evidence</summary>")
+    lines.append("")
+    lines.append(f"- {line}")
     lines.append("")
     lines.append("</details>")
     lines.append("")
@@ -951,9 +1208,12 @@ def render(result: dict[str, Any], run_url: str | None = None) -> str:
     render_header(result, lines)
     render_change(result, lines)
     render_system_impact(result, lines)
+    render_existing_evidence(result, lines)
+    render_execution(result, lines)
     render_verification(result, lines)
     render_before_merge(result, lines)
     render_review(result, lines)
+    render_coverage_limits(result, lines)
     render_details(result, lines)
     render_footer(lines, run_url)
     return "\n".join(lines).rstrip() + "\n"
