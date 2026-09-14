@@ -765,6 +765,60 @@ def test_canonical_handler_and_call_names_preferred_over_bare_step_symbols():
     assert "authMiddleware" not in out
 
 
+def test_unrelated_handler_does_appear_when_flow_local_evidence_actually_connects_it():
+    """The positive mirror of the case above: `Server.loginUser` must be
+    EXCLUDED only because renew_access's own steps never call it -- if the
+    handler's own evidence genuinely does call into it (e.g. a shared
+    session-refresh helper), it must render, exactly like any other proven
+    call. The exclusion rule is about proof, not about the symbol's name."""
+    result = _base_result(
+        affected_flows=[
+            _flow_with_steps(
+                "flow:POST:/tokens/renew_access",
+                "POST /tokens/renew_access",
+                "server.renewAccessToken",
+                ("api/token.go", 23),
+                calls=[("api/login.go", "Server.loginUser", 10)],
+                changed_nodes=[
+                    ("api/token.go", "Server.renewAccessToken", 23),
+                    ("api/login.go", "Server.loginUser", 10),
+                ],
+            )
+        ],
+        accepted_impacts=[{"id": "flow:POST:/tokens/renew_access", "status": "proven"}],
+    )
+    out = r.render(result)
+    assert "  → Server.loginUser" in out
+
+
+def test_zero_mapped_tests_never_renders_a_positive_aggregate_count():
+    """A stricter form of `test_no_mapped_tests_says_none_not_zero_confusingly`:
+    when every test-count field the summary carries is genuinely zero, no
+    digit greater than zero for a test count may appear anywhere in the
+    Existing evidence / Execution sections -- not just that the section is
+    omitted, but that no positive count can leak in from elsewhere."""
+    result = _base_result(
+        affected_flows=[_make_flow("flow:a", "POST /login", "AuthController.login", "AuthService.login")],
+        accepted_impacts=[{"id": "flow:a", "status": "proven"}],
+        summary={
+            "verdict": "VERIFICATION INCOMPLETE",
+            "risk": "MEDIUM",
+            "counts": {
+                "mapped_tests": 0,
+                "supporting_tests": 0,
+                "tests_exercising_flows": 0,
+                "tests_supporting_behavior": 0,
+                "tests_verifying_behavior": 0,
+                "tests_executed": 0,
+            },
+        },
+    )
+    out = r.render(result)
+    assert "### Existing evidence" not in out
+    assert "**Tests executed by Sydes:** No." in out
+    assert "Yes —" not in out
+
+
 def test_single_changed_target_renders_exactly_as_before():
     """Regression: the common one-target-per-flow case is unchanged --
     no stray '+N more' note, no behavior change for the ordinary case."""
