@@ -391,10 +391,16 @@ def test_word_obligation_never_appears_in_rendered_output():
 
 
 def test_no_raw_analysis_status_enum_dump():
+    """The raw `analysis_status` enum value must never leak verbatim --
+    "Analysis" alone is no longer a safe proxy for that (the header's own
+    "Analysis complete" verdict label and the "Change analysis" section
+    both legitimately contain the word now), so this checks the actual
+    raw enum shape instead: the bare uppercase token and the
+    "analysis_status" field name itself."""
     result = _base_result(analysis_status="partial")
     out = r.render(result)
-    assert "Analysis" not in out.split("---")[0]  # header/body, not the footer
     assert "PARTIAL" not in out
+    assert "analysis_status" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -1191,7 +1197,7 @@ def test_still_unverified_distinguishes_no_test_found_from_test_not_executed():
     )
     out = r.render(result)
     section = out.split("### Still unverified")[1].split("###")[0]
-    assert "**API behavior:** a relevant test exists but was not executed by Sydes" in section
+    assert "**API behavior:** a relevant test was found — run it in your own environment to confirm" in section
     assert "**Validation behavior:** no relevant test found" in section
 
 
@@ -1303,3 +1309,184 @@ def test_main_result_unavailable_path(tmp_path):
     assert code == 0
     assert out_path.exists()
     assert "No result produced" in out_path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# 15. Reframed messaging: "about this change" vs "about the surrounding
+# route", handoff language for unexecuted evidence, and the header's new
+# verdict/impact wording. Regression tests for the submission reframing --
+# no verdict/risk COMPUTATION changed, only presentation.
+# ---------------------------------------------------------------------------
+
+
+def test_header_uses_reframed_verdict_and_impact_labels():
+    result = _base_result(summary={
+        "verdict": "VERIFICATION INCOMPLETE", "risk": "MEDIUM",
+        "counts": {"mapped_tests": 0, "tests_executed": 0},
+    })
+    out = r.render(result)
+    header = out.split("\n")[4]
+    assert "◐ Analysis complete" in header
+    assert "Medium impact" in header
+    assert "risk" not in header.lower()
+
+
+def test_header_action_required_keeps_a_strong_signal():
+    result = _base_result(summary={
+        "verdict": "ACTION REQUIRED", "risk": "HIGH",
+        "counts": {"mapped_tests": 0, "tests_executed": 0},
+    })
+    out = r.render(result)
+    header = out.split("\n")[4]
+    assert "⚠ Action required" in header
+    assert "High impact" in header
+
+
+def test_change_analysis_all_green_when_change_is_fully_established_and_verified():
+    """The Express-shaped acceptance case: changed symbol, established
+    path, mapped test, passed -- every line should read positively."""
+    result = _base_result(
+        change={"base": "main", "symbols": [{"name": "create", "file": "a.ts"}], "files": []},
+        accepted_impacts=[{"id": "flow:x", "status": "proven"}],
+        affected_flows=[
+            _make_flow("flow:x", "POST /pets", "create", "PetService.create", obligations=[
+                _make_obligation(
+                    "validation", "rejects non-positive age", status="passed", introduced=True,
+                    mapped_tests=[_make_test("PetService.test.ts", "rejects", "A_direct_invocation")],
+                ),
+            ]),
+        ],
+    )
+    out = r.render(result)
+    section = out.split("### Change analysis")[1].split("###")[0]
+    assert section.count("✅") == 4
+    assert "❌" not in section
+    assert "○" not in section
+
+
+def test_change_analysis_shows_handoff_icon_when_test_found_but_not_executed():
+    result = _base_result(
+        change={"base": "main", "symbols": [{"name": "create", "file": "a.ts"}], "files": []},
+        accepted_impacts=[{"id": "flow:x", "status": "proven"}],
+        affected_flows=[
+            _make_flow("flow:x", "POST /pets", "create", "PetService.create", obligations=[
+                _make_obligation(
+                    "validation", "rejects non-positive age", status="unknown", introduced=True,
+                    reason="Test execution was disabled (--no-run-tests)",
+                    mapped_tests=[_make_test("PetService.test.ts", "rejects", "A_direct_invocation")],
+                ),
+            ]),
+        ],
+    )
+    out = r.render(result)
+    section = out.split("### Change analysis")[1].split("###")[0]
+    assert "✅ Relevant regression test found" in section
+    assert "○ Changed behavior verified" in section
+
+
+def test_change_analysis_all_red_when_nothing_is_established():
+    result = _base_result()
+    out = r.render(result)
+    section = out.split("### Change analysis")[1].split("###")[0]
+    assert section.count("❌") == 4
+
+
+def test_verification_separates_this_change_from_the_surrounding_route():
+    """The core reframing: a route whose changed-behavior obligation is
+    unverified must show that under "Still unverified" (about THIS
+    change), while a completely unrelated, pre-existing obligation on the
+    same route shows separately, under softer, non-alarming language --
+    never merged into one undifferentiated list."""
+    result = _base_result(
+        accepted_impacts=[{"id": "flow:x", "status": "proven"}],
+        affected_flows=[
+            _make_flow("flow:x", "POST /pets", "create", "PetService.create", obligations=[
+                _make_obligation(
+                    "validation", "rejects non-positive age", status="unverified", introduced=True,
+                    reason="No existing test asserts this behavior",
+                ),
+                _make_obligation(
+                    "event_emission", "dispatches pet.created", status="unverified", introduced=False,
+                    reason="No existing test asserts this behavior",
+                ),
+            ]),
+        ],
+    )
+    out = r.render(result)
+    assert "### Still unverified" in out
+    this_change_section = out.split("### Still unverified")[1].split("###")[0]
+    assert "**Validation behavior:**" in this_change_section
+    assert "Event emission" not in this_change_section
+
+    assert "### Also on this route (pre-existing)" in out
+    route_section = out.split("### Also on this route (pre-existing)")[1].split("###")[0]
+    assert "**Event emission:**" in route_section
+    assert "not a reason this PR is unhealthy" in route_section
+
+
+def test_verification_falls_back_to_one_section_when_introduced_by_change_is_unpopulated():
+    """No `introduced_by_change` signal anywhere -- there is nothing to
+    split on, so this must fall back to the original single,
+    undifferentiated section rather than fabricate a "this change" claim
+    with no evidence behind it."""
+    result = _base_result(
+        accepted_impacts=[{"id": "flow:x", "status": "proven"}],
+        affected_flows=[
+            _make_flow("flow:x", "POST /pets", "create", "PetService.create", obligations=[
+                _make_obligation(
+                    "validation", "rejects non-positive age", status="unverified", introduced=False,
+                    reason="No existing test asserts this behavior",
+                ),
+            ]),
+        ],
+    )
+    out = r.render(result)
+    assert "### Still unverified" in out
+    assert "### Also on this route (pre-existing)" not in out
+
+
+def test_executed_test_count_falls_back_to_obligation_executions():
+    """Regression test for a real self-contradiction the reframed comment
+    exposed: `summary.counts.tests_executed` only ever reflects a
+    whole-suite run, never the individually-targeted mapped-test
+    execution path -- so "Existing evidence" could show a test's
+    Execution: passed while "Execution" said no tests ran at all, in the
+    SAME comment."""
+    result = _base_result(
+        summary={"verdict": "VERIFICATION INCOMPLETE", "risk": "MEDIUM", "counts": {"tests_executed": 0}},
+        affected_flows=[
+            _make_flow("flow:x", "POST /pets", "create", "PetService.create", obligations=[
+                _make_obligation(
+                    "validation", "rejects non-positive age", status="passed", introduced=True,
+                    mapped_tests=[_make_test("PetService.test.ts", "rejects", "A_direct_invocation")],
+                ),
+            ]),
+        ],
+    )
+    result["affected_flows"][0]["obligations"][0]["executions"] = [
+        {"test_id": "PetService.test.ts::rejects", "status": "passed"}
+    ]
+    out = r.render(result)
+    assert "**Tests executed by Sydes:** Yes — 1 test(s) run." in out
+
+
+def test_change_analysis_falls_back_to_status_when_mapped_tests_is_trimmed_from_the_result():
+    """A captured/trimmed result can carry `status`/`reason` proving a test
+    was mapped (`resolve_obligation_status` never sets these otherwise)
+    while `mapped_tests` itself is absent -- the checklist must not read
+    that as "no relevant test found"."""
+    result = _base_result(
+        affected_flows=[
+            _make_flow("flow:x", "POST /pets", "create", "PetService.create", obligations=[
+                _make_obligation(
+                    "validation", "rejects non-positive age", status="unknown", introduced=True,
+                    reason="Test execution was disabled (--no-run-tests)",
+                    # mapped_tests deliberately omitted, as in a trimmed fixture.
+                ),
+            ]),
+        ],
+    )
+    out = r.render(result)
+    section = out.split("### Change analysis")[1].split("###")[0]
+    assert "✅ Relevant regression test found" in section
+    assert "○ Changed behavior verified" in section

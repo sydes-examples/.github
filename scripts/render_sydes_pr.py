@@ -47,14 +47,32 @@ MARKER = "<!-- sydes-verification-comment -->"
 # reviewer; only these translations are.
 # ---------------------------------------------------------------------------
 
+#: These are presentation labels only -- `summary.verdict`'s own three enum
+#: values and how they're computed are untouched (see `verify/analyzer.py`).
+#: The wording change is deliberate: "VERIFICATION INCOMPLETE" (Sydes' own
+#: internal name for "nothing failed, but not everything on this route has
+#: executed evidence") previously read as "More verification needed" --
+#: which sounds like Sydes is asking the reviewer for more work, when what
+#: it actually means is "analysis finished, here's exactly what's left and
+#: why" (see `render_change_analysis`/`render_verification`, which now
+#: separate what's about THIS change from what's about the surrounding,
+#: possibly pre-existing route). Reserve alarming language for a genuine
+#: blocking signal: a failed test, a blocking review finding, or an
+#: unresolved issue that materially affects the changed behavior itself --
+#: that is exactly what "ACTION REQUIRED" already means and continues to.
 _HUMAN_VERDICT = {
-    "VERIFIED": "Fully verified",
-    "VERIFICATION INCOMPLETE": "More verification needed",
-    "ACTION REQUIRED": "Action required",
-    "OK": "No affected behavior found",
+    "VERIFIED": "✅ Verified",
+    "VERIFICATION INCOMPLETE": "◐ Analysis complete",
+    "ACTION REQUIRED": "⚠ Action required",
+    "OK": "✅ No affected behavior found",
 }
 
-_HUMAN_RISK = {"LOW": "Low risk", "MEDIUM": "Medium risk", "HIGH": "High risk"}
+#: Relabeled from "risk" to "impact": this number has always measured how
+#: much of the affected route lacks executed evidence, not how sensitive or
+#: broad the change itself is -- "risk" read as a judgment on the CHANGE;
+#: "impact" reads as a fact about how much surface Sydes is describing.
+#: Same three underlying values, `summary.risk`, untouched.
+_HUMAN_RISK = {"LOW": "Low impact", "MEDIUM": "Medium impact", "HIGH": "High impact"}
 
 _AREA_BY_BOUNDARY_KIND = {
     "api": "API",
@@ -186,7 +204,7 @@ def render_header(result: dict[str, Any], lines: list[str]) -> None:
     verdict = str(_get(result, "summary", "verdict", default="UNKNOWN"))
     risk = str(_get(result, "summary", "risk", default="UNKNOWN"))
     human_verdict = _HUMAN_VERDICT.get(verdict, verdict.capitalize())
-    human_risk = _HUMAN_RISK.get(risk, risk.capitalize() + " risk" if risk != "UNKNOWN" else "Risk unknown")
+    human_risk = _HUMAN_RISK.get(risk, risk.capitalize() + " impact" if risk != "UNKNOWN" else "Impact unknown")
 
     lines.append("## Sydes")
     lines.append("")
@@ -732,24 +750,103 @@ def _real_statement_obligations(result: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _meaningful_obligations(result: dict[str, Any]) -> list[dict[str, Any]]:
-    """The obligations worth showing a reviewer at all.
+def _obligations_split_by_relevance(
+    result: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(about_this_change, about_the_route)` -- the same `introduced_by_change`
+    signal `_meaningful_obligations` already reads, but keeping BOTH groups
+    instead of picking one. A PR whose own changed behavior is fully proven
+    must not read as unhealthy merely because unrelated, pre-existing
+    behavior on the same route (a side effect the diff never touched, a
+    route-contract skeleton nobody wrote a test for last year) also lacks
+    executed evidence -- that is a fact about the route, not about this
+    change, and the two must never be presented as one undifferentiated
+    pile of "still unverified".
 
-    `VerificationObligation.introduced_by_change` is the backend's own
-    signal for "this claim exists specifically because of this diff" as
-    opposed to a pre-existing, generic obligation on the same route (e.g. a
-    change to pause-duration validation does not make an unrelated
-    `allow_voice_tags` route check something THIS PR needs verifying). When
-    that flag is populated for this result, trust it completely and show
-    only those. It is not always populated by every analysis path, though
-    (confirmed empirically: several real results have zero obligations
-    flagged `introduced_by_change=True` despite having real, specific
-    statements) -- in that case, fall back to every real (non-boilerplate)
-    statement, on the honest assumption that an unpopulated flag is a data
-    gap, not a claim that nothing here relates to the change."""
+    When `introduced_by_change` is unpopulated for every obligation (a real,
+    known data gap on some analysis paths -- see `_meaningful_obligations`),
+    there is no signal to split on at all: everything returns in
+    `about_the_route`, and callers fall back to the old undifferentiated
+    presentation rather than fabricate a "this change" claim with nothing
+    behind it."""
     real = _real_statement_obligations(result)
-    introduced = [o for o in real if _get(o, "introduced_by_change", default=False)]
-    return introduced if introduced else real
+    about_this_change = [o for o in real if _get(o, "introduced_by_change", default=False)]
+    changed_ids = {id(o) for o in about_this_change}
+    about_the_route = [o for o in real if id(o) not in changed_ids]
+    return about_this_change, about_the_route
+
+
+# ---------------------------------------------------------------------------
+# Change analysis -- the four-line answer to the question a reviewer
+# actually has first ("is THIS change covered?"), computed entirely from
+# data the sections below already read. No new Sydes signal; this just
+# surfaces the same facts earlier and scoped to what the diff introduced,
+# not the whole route.
+# ---------------------------------------------------------------------------
+
+
+def _obligation_has_mapped_test(obligation: dict[str, Any]) -> bool:
+    """True when a test is genuinely mapped to this obligation -- normally
+    just a non-empty `mapped_tests`, but also true when `status`/`reason`
+    can only exist BECAUSE a mapped test was present (`resolve_obligation_
+    status`/its `--no-run-tests` override in `verify/analyzer.py` never
+    sets these otherwise): `passed`/`failed`, or a reason naming execution
+    at all. Needed because `mapped_tests` itself is absent from some
+    captured/trimmed results even when the obligation's own status proves
+    one existed; reading only `mapped_tests` would then under-report."""
+    if _as_list(_get(obligation, "mapped_tests", default=[])):
+        return True
+    status = str(_get(obligation, "status", default=""))
+    if status in {"passed", "failed"}:
+        return True
+    reason = str(_get(obligation, "reason", default="") or "").lower()
+    return "no-run-tests" in reason or "was not executed" in reason
+
+
+def render_change_analysis(result: dict[str, Any], lines: list[str]) -> None:
+    changed_symbols = _as_list(_get(result, "change", "symbols", default=[]))
+    flows = _as_list(_get(result, "affected_flows", default=[]))
+    impacts = _as_list(_get(result, "accepted_impacts", default=[]))
+    has_established_path = bool(flows) or any(
+        str(_get(impact, "status", default="")) == "proven" for impact in impacts
+    )
+
+    about_this_change, about_the_route = _obligations_split_by_relevance(result)
+    # Same fallback `render_verification` already uses: when
+    # `introduced_by_change` is unpopulated everywhere (a known data gap on
+    # some analysis paths, not "nothing here relates to the change"),
+    # `about_this_change` is empty -- checking only that set would falsely
+    # read as "no relevant test found" even when `about_the_route` (really
+    # just "every real obligation" in this case) plainly has one. Never
+    # apply this fallback when `about_this_change` genuinely has entries
+    # that just don't happen to pass yet -- that IS a real answer, not a
+    # data gap.
+    relevant = about_this_change if about_this_change else about_the_route
+    has_mapped_test = any(_obligation_has_mapped_test(o) for o in relevant)
+    has_failure = any(str(_get(o, "status", default="")) == "failed" for o in relevant)
+    all_verified = bool(relevant) and all(
+        str(_get(o, "status", default="")) == "passed" for o in relevant
+    )
+
+    if all_verified:
+        verified_icon = "✅"
+    elif has_failure:
+        verified_icon = "❌"
+    elif has_mapped_test:
+        # Found, not (yet) executed/confirmed -- a handoff, never a dead
+        # end. See `render_execution`/`_unverified_reason_phrase` for the
+        # same "run it yourself" framing applied to the detailed reason.
+        verified_icon = "○"
+    else:
+        verified_icon = "❌"
+
+    lines.append("### Change analysis")
+    lines.append("")
+    lines.append(("✅" if changed_symbols else "❌") + " Changed behavior identified")
+    lines.append(("✅" if has_established_path else "❌") + " Affected API/system path established")
+    lines.append(("✅" if has_mapped_test else "❌") + " Relevant regression test found")
+    lines.append(f"{verified_icon} Changed behavior verified")
+    lines.append("")
 
 
 def _relevant_tests_row(counts: dict[str, Any]) -> str:
@@ -887,9 +984,34 @@ def render_existing_evidence(result: dict[str, Any], lines: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _executed_test_count(result: dict[str, Any]) -> int:
+    """`summary.counts.tests_executed` only ever reflects a whole-repo-suite
+    run (`ci_suite.tests_passed + tests_failed`) -- it was never updated for
+    the individually-targeted mapped-test execution path
+    (`VerificationObligation.executions`, one real `TestExecution` per
+    mapped test Sydes ran on its own; see `sydes.verify.analyzer.
+    _run_test_execution`), so a result where every relevant test was
+    individually run and passed could still read `tests_executed=0`,
+    contradicting "Execution: passed" shown two sections earlier in the
+    SAME comment. This derives the real count directly from the
+    `executions` Sydes already recorded, deduplicated by `test_id` (an
+    obligation's mapped test can appear on more than one obligation), never
+    changing what Sydes verified -- only reading a more complete field."""
+    seen: set[str] = set()
+    for flow in _as_list(_get(result, "affected_flows", default=[])):
+        for obligation in _as_list(_get(flow, "obligations", default=[])):
+            for execution in _as_list(_get(obligation, "executions", default=[])):
+                if str(_get(execution, "status", default="")) not in {"passed", "failed"}:
+                    continue
+                test_id = _get(execution, "test_id", default=None)
+                if test_id:
+                    seen.add(str(test_id))
+    return len(seen)
+
+
 def render_execution(result: dict[str, Any], lines: list[str]) -> None:
     counts = _get(result, "summary", "counts", default={})
-    executed = counts.get("tests_executed", 0)
+    executed = counts.get("tests_executed", 0) or _executed_test_count(result)
 
     lines.append("### Execution")
     lines.append("")
@@ -901,10 +1023,15 @@ def render_execution(result: dict[str, Any], lines: list[str]) -> None:
         )
         if disabled:
             lines.append(
-                "**Tests executed by Sydes:** No — test execution is disabled in this workflow (`--no-run-tests`)."
+                "**Tests executed by Sydes:** No — test execution is disabled in this workflow "
+                "(`--no-run-tests`). Any test(s) found below are a handoff, not a gap: run them "
+                "in your own environment or existing CI to confirm."
             )
         else:
-            lines.append("**Tests executed by Sydes:** No.")
+            lines.append(
+                "**Tests executed by Sydes:** No. Any test(s) found below are a handoff, not a "
+                "gap: run them in your own environment or existing CI to confirm."
+            )
     lines.append("")
 
 
@@ -924,42 +1051,47 @@ _STILL_UNVERIFIED_HEADER = (
 
 
 def _unverified_reason_phrase(obligation: dict[str, Any]) -> str:
+    """A test Sydes found but could not run is a HANDOFF, not a dead end --
+    Sydes' own sandbox lacking a DB/container/secret says nothing about
+    whether the test actually passes; the reviewer's own environment (or
+    existing CI) very likely can run it. Reserve the strongest wording
+    ("FAILED") for a genuine, actually-executed failure -- that remains the
+    one case this section should read as alarming."""
     status = str(_get(obligation, "status", default=""))
     reason = str(_get(obligation, "reason", default="") or "").strip()
     lowered = reason.lower()
     if status == "failed":
         return f"verification FAILED — {reason}" if reason else "verification failed"
     if "no-run-tests" in lowered or "was not executed" in lowered:
-        return "a relevant test exists but was not executed by Sydes"
+        return "a relevant test was found — run it in your own environment to confirm"
     if "no existing test asserts" in lowered:
         return "no relevant test found"
     if "exercise this flow but none assert" in lowered:
         return "a test exercises this flow but does not assert this specific behavior"
     if "could not be executed" in lowered or "without attributable" in lowered:
-        return "the test suite could not be executed"
+        return "Sydes could not run the test suite in this environment — try running it in yours"
     if reason:
         return reason[0].lower() + reason[1:] if len(reason) > 1 else reason.lower()
     return "impact path incomplete or verification evidence insufficient"
 
 
-def render_verification(result: dict[str, Any], lines: list[str]) -> None:
-    """Obligations are grouped into a handful of fixed categories, one
-    row per category, using the worst status in that category -- never a
-    raw obligation statement (empirically, real statements are inconsistent
-    enough across kinds -- code fragments, boilerplate, genuine prose --
-    that showing them verbatim reads as internal, not reviewer-facing; see
-    the module-level obligation-filtering notes above). A category that IS
-    fully verified is called out separately and positively, never buried in
-    the same list as what still needs evidence."""
-    meaningful = _meaningful_obligations(result)
+_SURROUNDING_ROUTE_HEADER = (
+    "Pre-existing behavior on the same route that this change did not touch -- "
+    "worth knowing about, not a reason this PR is unhealthy."
+)
+
+
+def _categorize_obligations(
+    obligations: list[dict[str, Any]],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """`(verified_category_labels, [(label, reason), ...])`, one row per
+    obligation KIND (never a raw statement -- see the module-level
+    filtering notes above), worst status wins within a kind."""
     by_category: dict[str, list[dict[str, Any]]] = {}
-    for obligation in meaningful:
+    for obligation in obligations:
         kind = str(_get(obligation, "kind", default=""))
         if kind in _OBLIGATION_CATEGORY_LABEL:
             by_category.setdefault(kind, []).append(obligation)
-
-    if not by_category:
-        return
 
     verified_categories: list[str] = []
     unverified_rows: list[tuple[str, str]] = []
@@ -977,22 +1109,82 @@ def render_verification(result: dict[str, Any], lines: list[str]) -> None:
             unverified_rows.append((label, _unverified_reason_phrase(worst)))
         if len(verified_categories) + len(unverified_rows) >= _MAX_CHECKLIST_ROWS:
             break
+    return verified_categories, unverified_rows
 
+
+def _render_obligation_group(
+    obligations: list[dict[str, Any]],
+    lines: list[str],
+    *,
+    verified_heading: str,
+    unverified_heading: str,
+    unverified_intro: str,
+    exclude_verified_labels: set[str] = frozenset(),
+) -> None:
+    verified_categories, unverified_rows = _categorize_obligations(obligations)
+    # A category (e.g. "Validation behavior") groups obligations by KIND,
+    # not by which specific statement -- a different, non-`introduced_by_
+    # change` obligation of the same kind can legitimately also be passed.
+    # True, but repeating the identical category label right under one
+    # already shown as verified above reads as a confusing duplicate, not
+    # as new information -- skip it here rather than show the same label
+    # twice for two different underlying facts.
+    verified_categories = [label for label in verified_categories if label not in exclude_verified_labels]
     if verified_categories:
-        lines.append("### Verified")
+        lines.append(f"### {verified_heading}")
         lines.append("")
         for label in verified_categories:
             lines.append(f"- {label}")
         lines.append("")
-
     if unverified_rows:
-        lines.append("### Still unverified")
+        lines.append(f"### {unverified_heading}")
         lines.append("")
-        lines.append(f"_{_STILL_UNVERIFIED_HEADER}_")
+        lines.append(f"_{unverified_intro}_")
         lines.append("")
         for label, phrase in unverified_rows:
             lines.append(f"- **{label}:** {phrase}")
         lines.append("")
+
+
+def render_verification(result: dict[str, Any], lines: list[str]) -> None:
+    """Two groups, never one undifferentiated pile: what this diff itself
+    introduced (`about_this_change`) is reported first, under the same
+    "Verified"/"Still unverified" headings this section has always used --
+    that scoping is exactly what a reviewer's first question ("is THIS
+    change covered?") needs. Pre-existing behavior on the same route that
+    the diff never touched (`about_the_route`) is reported separately,
+    under visibly softer language, so it is never mistaken for a problem
+    with the PR itself (see `_obligations_split_by_relevance`).
+
+    When `introduced_by_change` is unpopulated everywhere (a known data
+    gap on some analysis paths), there is nothing to split on -- falls
+    back to the original single, undifferentiated section rather than
+    invent a "this change" claim with no signal behind it."""
+    about_this_change, about_the_route = _obligations_split_by_relevance(result)
+    if not about_this_change and not about_the_route:
+        return
+
+    if about_this_change:
+        this_change_verified, _unverified = _categorize_obligations(about_this_change)
+        _render_obligation_group(
+            about_this_change, lines,
+            verified_heading="Verified", unverified_heading="Still unverified",
+            unverified_intro=_STILL_UNVERIFIED_HEADER,
+        )
+        if about_the_route:
+            _render_obligation_group(
+                about_the_route, lines,
+                verified_heading="Also verified on this route",
+                unverified_heading="Also on this route (pre-existing)",
+                unverified_intro=_SURROUNDING_ROUTE_HEADER,
+                exclude_verified_labels=set(this_change_verified),
+            )
+    else:
+        _render_obligation_group(
+            about_the_route, lines,
+            verified_heading="Verified", unverified_heading="Still unverified",
+            unverified_intro=_STILL_UNVERIFIED_HEADER,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1265,6 +1457,7 @@ def render(result: dict[str, Any], run_url: str | None = None) -> str:
     lines: list[str] = [MARKER, ""]
     render_header(result, lines)
     render_change(result, lines)
+    render_change_analysis(result, lines)
     render_system_impact(result, lines)
     render_existing_evidence(result, lines)
     render_execution(result, lines)
