@@ -71,6 +71,15 @@ on:
           own test suite in this job's environment.
         type: boolean
         default: false
+      node_version:
+        description: >-
+          Node.js version for `actions/setup-node`, only used when
+          `run_tests` is true and the repository has a package.json. A
+          caller whose native dependencies predate modern Node/V8 (e.g. an
+          old `bcrypt`/`nan` build) can pin an older runtime here instead
+          of the default.
+        type: string
+        default: "20"
     secrets:
       OPENAI_API_KEY:
         description: OpenAI key for `sydes verify-change`'s LLM calls.
@@ -116,7 +125,7 @@ jobs:
         if: inputs.run_tests && hashFiles('package.json') != ''
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ inputs.node_version }}
 
       - name: Install repository dependencies
         if: inputs.run_tests && hashFiles('package.json') != ''
