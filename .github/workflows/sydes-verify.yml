@@ -33,12 +33,15 @@ on:
         default: "app"
       sydes_ref:
         description: >-
-          Version of the `sydes` PyPI package to install (passed to
-          `pip install sydes==<value>`), e.g. "0.2.0b8". Kept as a plain
-          version string, not a git ref, so normal callers install the
-          public release the same way any other user would.
+          Exact `sydes` PyPI version to pin (passed to `pip install
+          sydes==<value>`), e.g. "0.2.1". Leave unset (the default) for
+          the normal, public install contract: `pip install --upgrade
+          sydes`, the same command any user runs, always resolving to
+          the newest stable release. Only set this for benchmark/research
+          reproducibility, where a specific version needs to be recorded
+          and pinned deliberately.
         type: string
-        default: "0.2.0b8"
+        default: ""
       renderer_ref:
         description: Git ref of this repository to pull the renderer script from.
         type: string
@@ -94,7 +97,11 @@ jobs:
       - name: Install Sydes
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "sydes==${{ inputs.sydes_ref }}"
+          if [ -n "${{ inputs.sydes_ref }}" ]; then
+            python -m pip install "sydes==${{ inputs.sydes_ref }}"
+          else
+            python -m pip install --upgrade sydes
+          fi
           sydes --version
 
       - name: Run Sydes verify-change
