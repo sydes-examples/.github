@@ -646,6 +646,46 @@ def test_before_merge_recommends_a_test_when_none_identified_and_impact_found():
     assert "- Add or run a test covering the affected behavior before merging." in out
 
 
+def test_unattached_evidence_is_named_and_suppresses_add_a_test():
+    """Unleash PR #12632-shaped regression: a changed symbol
+    (`strategySchema`) with no HTTP route ever structurally established --
+    but two relevant, verified tests target it directly. These must
+    appear by name in Existing evidence, and "Add or run a test" must NOT
+    render, since real test evidence for this change does exist even
+    though it never reached a resolved flow."""
+    result = _base_result(
+        affected_boundaries=[
+            {"kind": "callable", "status": "proven", "label": "strategySchema", "file": "src/lib/services/strategy-schema.ts"},
+        ],
+        unattached_evidence=[
+            {
+                "scope": "symbol",
+                "target_symbol": "strategySchema",
+                "target_file": "src/lib/services/strategy-schema.ts",
+                "mapped_tests": [
+                    {"file": "src/lib/routes/admin-api/strategy.test.ts", "name": "does not allow duplicate parameter names when creating a strategy"},
+                    {"file": "src/lib/routes/admin-api/strategy.test.ts", "name": "does not allow duplicate parameter names when updating a strategy"},
+                ],
+            },
+        ],
+        summary={
+            "verdict": "VERIFICATION INCOMPLETE", "risk": "MEDIUM",
+            "counts": {
+                "mapped_tests": 2, "tests_executed": 0,
+                "tests_verifying_behavior": 2, "tests_exercising_flows": 2, "tests_supporting_behavior": 0,
+            },
+        },
+    )
+    out = r.render(result)
+    section = out.split("### Existing evidence")[1].split("###")[0]
+    assert "does not allow duplicate parameter names when creating a strategy" in section
+    assert "does not allow duplicate parameter names when updating a strategy" in section
+    assert "changed symbol `strategySchema`" in section
+    assert "Execution: not run by Sydes" in section
+    assert "None identified" not in section
+    assert "Add or run a test" not in out
+
+
 def test_before_merge_omitted_when_no_impact_was_found_at_all():
     result = _base_result()  # no flows, no boundaries, no impacts -- true zero signal
     out = r.render(result)

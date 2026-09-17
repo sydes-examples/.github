@@ -826,6 +826,30 @@ def _named_test_entries(result: dict[str, Any]) -> list[tuple[str, str, str, str
                 verb = _TIER_COVERAGE_VERB.get(tier, "Relates to")
                 file_name = file.rsplit("/", 1)[-1]
                 entries.append((f"`{file_name}::{case}`", verb, route, _obligation_execution_note(status)))
+
+    # Evidence that could not be attached to any resolved flow/obligation,
+    # but was preserved instead of disappearing (see
+    # `sydes.recovery.canonical_merge`'s evidence-ownership ladder) --
+    # never a route/handler claim, so the label says exactly what scope it
+    # actually is: a named changed symbol, or the change as a whole.
+    for slot in _as_list(_get(result, "unattached_evidence", default=[])):
+        scope = str(_get(slot, "scope", default=""))
+        target_symbol = _get(slot, "target_symbol", default=None)
+        if scope == "symbol" and target_symbol:
+            scope_label = f"changed symbol `{target_symbol}` (no established route/boundary)"
+        else:
+            scope_label = "this change (no established route/boundary)"
+        for test in _as_list(_get(slot, "mapped_tests", default=[])):
+            file = str(_get(test, "file", default="") or "")
+            case = str(_get(test, "case_name", default="") or _get(test, "name", default="") or "")
+            if not file or not case:
+                continue
+            key = (file, case)
+            if key in seen:
+                continue
+            seen.add(key)
+            file_name = file.rsplit("/", 1)[-1]
+            entries.append((f"`{file_name}::{case}`", "Relates to", scope_label, "not run by Sydes"))
     return entries
 
 
