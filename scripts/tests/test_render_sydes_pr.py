@@ -557,12 +557,18 @@ def test_single_api_boundary_never_produces_a_wider_surface_row():
 
 
 # ---------------------------------------------------------------------------
-# 15. Infrastructure -- only dependencies tied to the affected behavior
-#     (refinement pass: issue #4)
+# 15. Runtime dependencies never appear in the public PR comment
+#     (product-output pass: real cases showed this section stayed noisy
+#     and not reliably useful -- the field itself is untouched in the
+#     canonical result/artifacts, this is a presentation omission only)
 # ---------------------------------------------------------------------------
 
 
-def test_infrastructure_row_omits_repository_wide_dependencies():
+def test_flow_scoped_runtime_dependency_never_surfaces_in_the_comment():
+    """Regression: a flow-scoped runtime dependency used to render as an
+    "Infrastructure" area row and a "Key dependency" coverage-limits
+    bullet. Neither should appear anywhere in the rendered comment now,
+    regardless of scope."""
     result = _base_result(
         affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
         accepted_impacts=[{"id": "flow:a", "status": "proven"}],
@@ -572,11 +578,13 @@ def test_infrastructure_row_omits_repository_wide_dependencies():
         ],
     )
     out = r.render(result)
-    assert "| Infrastructure | Redis participates in the changed behavior |" in out
+    assert "Infrastructure" not in out
+    assert "Key dependency" not in out
+    assert "Redis" not in out
     assert "Elasticsearch" not in out
 
 
-def test_infrastructure_row_omitted_when_no_dependency_is_flow_scoped():
+def test_repository_wide_runtime_dependency_never_surfaces_either():
     result = _base_result(
         affected_flows=[_make_flow("flow:a", "POST /pets", "PetController.create", "PetService.create")],
         accepted_impacts=[{"id": "flow:a", "status": "proven"}],
@@ -584,6 +592,7 @@ def test_infrastructure_row_omitted_when_no_dependency_is_flow_scoped():
     )
     out = r.render(result)
     assert "Infrastructure" not in out
+    assert "Key dependency" not in out
     assert "SQL database" not in out
 
 

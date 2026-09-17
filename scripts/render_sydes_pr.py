@@ -342,22 +342,6 @@ def _describe_group(items: list[dict[str, Any]]) -> str:
     return "; ".join(parts)
 
 
-def _infrastructure_row(result: dict[str, Any]) -> tuple[str, str] | None:
-    """Only dependencies `runtime_dependencies` itself ties to the affected
-    flow (`scope == "affected_flow"`) are shown at the top level -- a
-    repository-wide dependency (`scope == "repository"`) was merely detected
-    somewhere in the codebase and says nothing about this change, so it is
-    dropped here rather than dumped as noise. This reads an existing field;
-    it does not change how runtime dependency analysis itself works."""
-    deps = _as_list(_get(result, "runtime_dependencies", default=[]))
-    flow_scoped = [d for d in deps if _get(d, "scope", default="") == "affected_flow"]
-    names = list(dict.fromkeys(str(_get(d, "name", default="")) for d in flow_scoped if _get(d, "name", default="")))
-    if not names:
-        return None
-    verb = "participates" if len(names) == 1 else "participate"
-    return ("Infrastructure", f"{', '.join(names)} {verb} in the changed behavior")
-
-
 def _system_impact_data(
     result: dict[str, Any],
 ) -> tuple[list[tuple[str, str]], list[str], bool]:
@@ -416,9 +400,11 @@ def _system_impact_data(
 
     has_any_impact = bool(established_routes or likely_routes or api_boundaries or any(by_kind.values()))
 
-    infra = _infrastructure_row(result)
-    if infra:
-        rows.append(infra)
+    # Runtime-dependency data (`result.runtime_dependencies`) is deliberately
+    # not surfaced in the public PR comment -- it stayed noisy and not
+    # reliably useful across real cases (confirmed on Healthchecks). The
+    # field itself is untouched in the canonical result/artifacts; this is
+    # a presentation omission only, not a change to what Sydes discovers.
 
     return rows[:_MAX_AREA_ROWS], wider_areas, has_any_impact
 
@@ -1190,16 +1176,6 @@ def render_coverage_limits(result: dict[str, Any], lines: list[str]) -> None:
         body.append(f"**{label}:** {coverage_note}")
 
     body.extend(_route_prefix_notes(result))
-
-    # Same "tied to the change, not just present in the repo" bar as the
-    # top-level Infrastructure row (see `_infrastructure_row`) -- a
-    # repository-wide dependency is not "strong evidence" for this change.
-    deps = _as_list(_get(result, "runtime_dependencies", default=[]))
-    flow_scoped_deps = [d for d in deps if _get(d, "scope", default="") == "affected_flow"]
-    if flow_scoped_deps:
-        name = _get(flow_scoped_deps[0], "name", default="")
-        if name:
-            body.append(f"**Key dependency:** {name}")
 
     if not body:
         return
