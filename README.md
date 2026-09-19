@@ -1,5 +1,14 @@
 # sydes-examples/.github
 
+> **⚠️ Deprecated.** The Sydes GitHub integration (reusable workflow +
+> PR comment renderer) has moved to
+> **[sydes-examples/sydes-action](https://github.com/sydes-examples/sydes-action)**.
+> New integrations should use that repository. The workflow here is kept
+> running, unchanged, only because some existing example repositories still
+> reference it directly — see that repo's README for the current setup
+> instructions and `uses:` snippet. This repository is not being deleted yet;
+> it remains as a historical fallback until every consumer has migrated.
+
 Central integration point for public Sydes demo repositories under the
 [sydes-examples](https://github.com/sydes-examples) organization.
 
@@ -20,6 +29,11 @@ otherwise have to copy:
   [`examples/README.md`](examples/README.md)).
 
 ## Using this from an example repository
+
+*(Legacy reference, kept accurate for existing consumers of this repo. New
+consumers should use the snippet in
+[sydes-examples/sydes-action](https://github.com/sydes-examples/sydes-action#using-this-from-an-example-repository)
+instead.)*
 
 ```yaml
 name: Sydes
