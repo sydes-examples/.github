@@ -1381,7 +1381,7 @@ def test_change_analysis_shows_handoff_icon_when_test_found_but_not_executed():
     out = r.render(result)
     section = out.split("### Change analysis")[1].split("###")[0]
     assert "✅ Relevant regression test found" in section
-    assert "○ Changed behavior verified" in section
+    assert "🟡 Verification pending test execution" in section
 
 
 def test_change_analysis_all_red_when_nothing_is_established():
@@ -1489,4 +1489,4 @@ def test_change_analysis_falls_back_to_status_when_mapped_tests_is_trimmed_from_
     out = r.render(result)
     section = out.split("### Change analysis")[1].split("###")[0]
     assert "✅ Relevant regression test found" in section
-    assert "○ Changed behavior verified" in section
+    assert "🟡 Verification pending test execution" in section

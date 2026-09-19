@@ -829,23 +829,26 @@ def render_change_analysis(result: dict[str, Any], lines: list[str]) -> None:
     )
 
     if all_verified:
-        verified_icon = "✅"
+        verified_line = "✅ Changed behavior verified"
     elif has_failure:
-        verified_icon = "❌"
+        verified_line = "❌ Changed behavior verified"
     elif has_mapped_test:
         # Found, not (yet) executed/confirmed -- a handoff, never a dead
         # end. See `render_execution`/`_unverified_reason_phrase` for the
         # same "run it yourself" framing applied to the detailed reason.
-        verified_icon = "○"
+        # Distinct wording, not just an icon: "Changed behavior verified"
+        # paired with a neutral/failure icon reads as a positive claim the
+        # icon then undercuts.
+        verified_line = "🟡 Verification pending test execution"
     else:
-        verified_icon = "❌"
+        verified_line = "❌ Changed behavior verified"
 
     lines.append("### Change analysis")
     lines.append("")
     lines.append(("✅" if changed_symbols else "❌") + " Changed behavior identified")
     lines.append(("✅" if has_established_path else "❌") + " Affected API/system path established")
     lines.append(("✅" if has_mapped_test else "❌") + " Relevant regression test found")
-    lines.append(f"{verified_icon} Changed behavior verified")
+    lines.append(verified_line)
     lines.append("")
 
 
